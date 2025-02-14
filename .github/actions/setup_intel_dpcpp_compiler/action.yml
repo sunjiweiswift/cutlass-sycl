@@ -1,0 +1,44 @@
+name: Setup Intel DPC++ compiler
+description: Common action to setup Intel DPC++ compiler
+
+inputs:
+  INTEL_DPCPP_DOWNLOAD_URL:
+    description: URL to download Intel DPC++ compiler
+    required: true
+
+runs:
+  using: composite
+  steps:
+
+    - uses: actions/cache/restore@v4
+      id: cache-dpcpp
+      with:
+        path: ${{ github.workspace }}/oneapi/compiler
+        key: dpcpp-${{ inputs.INTEL_DPCPP_DOWNLOAD_URL }}-${{ hashFiles('**/get_oneapi_component.py') }}
+
+    - name: Download DPC++
+      if: steps.cache-dpcpp.outputs.cache-hit != 'true'
+      shell: bash
+      run: >
+        python3.12 "${{ github.workspace }}/.github/scripts/get_oneapi_component.py" 
+        --installer-url ${{ inputs.INTEL_DPCPP_DOWNLOAD_URL }}
+        --destination "${{ github.workspace }}/oneapi"
+
+    - uses: actions/cache/save@v4
+      if: always() && steps.cache-dpcpp.outputs.cache-hit != 'true'
+      with:
+        path: ${{ github.workspace }}/oneapi/compiler
+        key: dpcpp-${{ inputs.INTEL_DPCPP_DOWNLOAD_URL }}-${{ hashFiles('**/get_oneapi_component.py') }}
+
+    - name: Setup Intel DPC++ env
+      shell: bash
+      run: |
+        source "${{ github.workspace }}/oneapi/compiler/latest/env/vars.sh"
+        echo "$PATH" >> "$GITHUB_PATH"
+        {
+          echo "CPATH=$CPATH"
+          echo "LIBRARY_PATH=$LIBRARY_PATH"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+          echo "CC=icx"
+          echo "CXX=icpx"
+        } >> "$GITHUB_ENV"

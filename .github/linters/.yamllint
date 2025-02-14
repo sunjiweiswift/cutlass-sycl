@@ -1,0 +1,25 @@
+extends: "default"
+
+rules:
+  braces:  # { k1: v1, k2: v2 } and {}
+    min-spaces-inside: 1
+    max-spaces-inside: 1
+    min-spaces-inside-empty: 0
+    max-spaces-inside-empty: 0
+  brackets:  # [ v1, v2 ] and []
+    min-spaces-inside: 1
+    max-spaces-inside: 1
+    min-spaces-inside-empty: 0
+    max-spaces-inside-empty: 0
+  document-start: "disable"  # no --- at start
+  empty-values: "disable"  # allow empty values in mappings. For example, workflow_dispatch without inputs is allowed.
+  indentation:
+    spaces: 2
+  line-length:
+    max: 180
+    level: "warning"
+  quoted-strings:
+    required: "only-when-needed"
+    quote-type: "double"
+    allow-quoted-quotes: true
+  truthy: "disable"  # allow truthy values

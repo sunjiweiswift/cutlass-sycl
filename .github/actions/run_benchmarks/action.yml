@@ -1,0 +1,39 @@
+name: Benchmarks
+description: Common action to run CUTLASS SYCL/CUDA benchmarks
+
+inputs:
+  PLATFORM:
+    description: Platform to run benchmarks on
+    required: true
+  INPUT:
+    description: Config file with inputs to run benchmarks
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run benchmarks
+      shell: bash
+      id: benchmarks
+      run: |
+        source "$GITHUB_WORKSPACE/.github/scripts/print_message.sh"
+
+        cd "$GITHUB_WORKSPACE/build" || exit 1
+
+        benchmarks_output="$GITHUB_WORKSPACE/outputs/testing"
+        mkdir -p "$benchmarks_output"
+
+        export BENCHMARK_FORMAT="console"
+        export BENCHMARK_OUT_FORMAT="json"
+        export BENCHMARK_OUT="$benchmarks_output/${{ inputs.PLATFORM }}_benchmarks.log"
+
+        print_message "Running CUTLASS benchmarks for ${{ inputs.INPUT }}" blue
+        
+        "$GITHUB_WORKSPACE/build/benchmarks/benchmarks" --config_file="$GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/input.in"
+        if [ $? -ne 0 ]; then
+          echo -e "::error:: Failed to run benchmarks for ${{ inputs.INPUT }}"
+          echo "benchmarks_failed=1" >> "$GITHUB_OUTPUT"
+          print_message "Failed to run benchmarks for ${{ inputs.INPUT }}" bright_red
+        else
+          print_message "Successfully ran benchmarks for ${{ inputs.INPUT }}" bright_green
+        fi

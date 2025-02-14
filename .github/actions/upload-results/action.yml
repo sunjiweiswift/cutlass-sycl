@@ -1,0 +1,67 @@
+name: Upload test results
+description: Common action to parse and upload test results
+
+inputs:
+  LOGS_DIR:
+    required: true
+  LOG_FILE_NAME:
+    required: true
+  ARTIFACT_NAME:
+    required: true
+  BENCHMARK_TYPE:
+    required: true
+  RUN_INFO:
+    required: false
+  DB_CONNECTION_STRING:
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Parse results
+      id: parse_results 
+      shell: bash
+      run: |
+        echo "Parsing test results..."
+        venv="${{ github.workspace }}/.venv"
+        python3.12 -m venv "$venv"
+        source "$venv/bin/activate"
+        pip install pandas
+        log_file="${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.log"
+
+        # produces CSV file with the same name as log file
+        python ${{ github.workspace }}/.github/scripts/parser.py \
+          --benchmark-type ${{ inputs.BENCHMARK_TYPE }} \
+          --log-file "$log_file" \
+          --run-info ${{ inputs.RUN_INFO }}
+
+        # check if the CSV file was created
+        if [ ! -f "${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.csv" ]; then
+          echo "Failed to parse test results"
+          echo "PARSING_FAILED=1" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    - name: Upload to DB
+      if: steps.parse_results.outcome == 'success' && steps.parse_results.outputs.PARSING_FAILED != '1'
+      shell: bash
+      env:
+        DB_CONNECTION_STRING: ${{ inputs.DB_CONNECTION_STRING }}
+      run: |
+        echo "Uploading test results..."
+        venv="${{ github.workspace }}/.venv"
+        python3.12 -m venv "$venv"
+        source "$venv/bin/activate"
+        pip install pandas sqlalchemy psycopg2-binary
+
+        python ${{ github.workspace }}/.github/scripts/uploader.py \
+          --benchmark-type ${{ inputs.BENCHMARK_TYPE }} \
+          --csv-data-file ${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.csv
+
+    - name: Attach CSV
+      if: steps.parse_results.outcome == 'success' && steps.parse_results.outputs.PARSING_FAILED != '1'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.ARTIFACT_NAME }}.csv
+        path: ${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.csv
+        if-no-files-found: warn

@@ -1,0 +1,2 @@
+source-path=${GITHUB_WORKSPACE}/.github/scripts
+disable=SC2043

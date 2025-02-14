@@ -1,0 +1,144 @@
+name: Build and Run XeTLA benchmark
+
+on:
+  workflow_dispatch:    # no inputs required
+
+env:
+  DRIVER_BRANCH: ci/comp_igc
+  DRIVER_VERSION: gfx-driver-ci-comp_igc-25012
+  DRIVER_REPO: gfx-driver-builds
+  DRIVER_PATH: artifacts/Linux/Ubuntu/22.04/Release
+  ONEMKL_DOWNLOAD_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/89a381f6-f85d-4dda-ae62-30d51470f53c/l_onemkl_p_2024.2.2.17_offline.sh
+  INTEL_DPCPP_DOWNLOAD_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/74587994-3c83-48fd-b963-b707521a63f4/l_dpcpp-cpp-compiler_p_2024.2.1.79_offline.sh
+  GTEST_VERSION: v1.15.0
+  HOME: /tmp/home
+
+jobs:
+  test:
+    name: XeTLA ${{ matrix.runner }} benchmarks ${{ matrix.data_type }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: pvc1100
+            tests: gemm_bf16
+            data_type: bf16_bf16_fp32
+          - runner: pvc1550
+            tests: gemm_bf16
+            data_type: bf16_bf16_fp32
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout XeTLA
+        uses: actions/checkout@v4
+        with:
+          repository: intel/xetla
+          path: xetla
+          fetch-depth: 0
+          ref: benchmark
+
+      - name: Get XeTLA config
+        id: xetla_sha
+        run: |
+          {
+            echo "XETLA_SHA=$(git -C ${{ github.workspace }}/xetla rev-parse HEAD)"
+            echo "XETLA_BRANCH=$(git -C ${{ github.workspace }}/xetla branch --show-current)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Intel GPU driver
+        uses: ./.github/actions/setup_driver
+        with:
+          DRIVER_BRANCH: ${{ env.DRIVER_BRANCH }}
+          DRIVER_VERSION: ${{ env.DRIVER_VERSION }}
+          DRIVER_REPO: ${{ env.DRIVER_REPO }}
+          DRIVER_PATH: ${{ env.DRIVER_PATH }}
+          ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+
+      - name: Setup Intel oneMKL
+        uses: ./.github/actions/setup_onemkl
+        with:
+          ONEMKL_DOWNLOAD_URL: ${{ env.ONEMKL_DOWNLOAD_URL }}
+
+      - name: Setup Intel DPC++ Compiler
+        uses: ./.github/actions/setup_intel_dpcpp_compiler
+        with:
+          INTEL_DPCPP_DOWNLOAD_URL: ${{ env.INTEL_DPCPP_DOWNLOAD_URL }}
+
+      - name: Setup Google Test
+        uses: ./.github/actions/setup_gtest
+        with:
+          GTEST_VERSION: ${{ env.GTEST_VERSION }}
+
+      - name: Sources hack
+        run: |
+          tests='using tests = ::testing::Types<Habana_Test0,\
+                      Habana_Test1,\
+                      Habana_Test2,\
+                      Habana_Test3,\
+                      Habana_Test4,\
+                      Habana_Test5,\
+                      Habana_Test6,\
+                      Habana_Test7,\
+                      Habana_Test8,\
+                      Habana_Test9,\
+                      Habana_Test10,\
+                      Habana_Batch_Test0,\
+                      Habana_Batch_Test1,\
+                      Habana_Batch_Test2,\
+                      Habana_Batch_Test3,\
+                      Habana_Batch_Test4>;'
+
+          sed -i '/REGISTER_TYPED_TEST_SUITE_P(bf16_gemm_test, esimd);/,/INSTANTIATE_TYPED_TEST_SUITE_P(bf16_gemm_test_suite, bf16_gemm_test, tests);/{
+            /REGISTER_TYPED_TEST_SUITE_P(bf16_gemm_test, esimd);/!{
+              /INSTANTIATE_TYPED_TEST_SUITE_P(bf16_gemm_test_suite, bf16_gemm_test, tests);/!d
+            }
+            /INSTANTIATE_TYPED_TEST_SUITE_P(bf16_gemm_test_suite, bf16_gemm_test, tests);/i\
+            '"$tests"'
+          }' "$GITHUB_WORKSPACE"/xetla/tests/integration/gemm/bf16/main.cpp
+
+          sed -i "/set(INTEGRATION_TIMEOUT 300)/d; /TIMEOUT \${INTEGRATION_TIMEOUT}/d" "$GITHUB_WORKSPACE"/xetla/tests/integration/CMakeLists.txt
+
+      - name: Configure XeTLA Project
+        run: |
+          cd "$GITHUB_WORKSPACE/xetla"
+          mkdir -p build && cd build
+
+          export SYCL_PROGRAM_COMPILE_OPTIONS=" -vc-codegen -vc-disable-indvars-opt -doubleGRF -Xfinalizer ' -printregusage -enableBCR -DPASTokenReduction ' "
+          echo SYCL_PROGRAM_COMPILE_OPTIONS="$SYCL_PROGRAM_COMPILE_OPTIONS" >> "$GITHUB_ENV"
+          cmake -G Ninja ..
+
+      - name: Build tests
+        uses: ./.github/actions/build_tests
+        with:
+          PROJECT: xetla
+          TARGETS: ${{ join(matrix.tests, ' ') }}
+        continue-on-error: true
+
+      - name: Run tests
+        uses: ./.github/actions/run_tests
+        with:
+          PROJECT: xetla
+          TARGETS: ${{ join(matrix.tests, ' ') }}
+        continue-on-error: true
+
+      - name: Upload results
+        uses: ./.github/actions/upload-results
+        with:
+          LOGS_DIR: ${{ github.workspace }}/outputs/testing
+          LOG_FILE_NAME: ${{ matrix.tests }}_test
+          ARTIFACT_NAME: xetla_${{ matrix.runner }}_benchmarks
+          BENCHMARK_TYPE: xetla
+          RUN_INFO: >
+            branch=${{ steps.xetla_sha.outputs.XETLA_BRANCH }}
+            sha=${{ steps.xetla_sha.outputs.XETLA_SHA }}
+            platform=${{ matrix.runner }}
+            data_type=${{ matrix.data_type }}
+            run_type=xetla
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}

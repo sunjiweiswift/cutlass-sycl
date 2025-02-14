@@ -1,0 +1,48 @@
+name: Setup Google Test
+description: Common action to setup Google Test
+
+inputs:
+  GTEST_VERSION:
+    description: Version of Google Test to setup
+    required: true
+
+runs:
+  using: composite
+  steps:
+      - uses: actions/cache/restore@v4
+        id: cache-gtest
+        with:
+          path: ${{ github.workspace }}/googletest
+          key: googletest-${{ inputs.GTEST_VERSION }}
+
+      - name: Checkout GoogleTest
+        if: steps.cache-gtest.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: google/googletest
+          ref: ${{ inputs.GTEST_VERSION }}
+          path: googletest
+  
+      - name: Build and Install GoogleTest
+        if: steps.cache-gtest.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          gtest_build_dir="${{ github.workspace }}/googletest/build"
+          mkdir "$gtest_build_dir" && cd "$gtest_build_dir"
+          cmake -G Ninja -DCMAKE_INSTALL_PREFIX="$gtest_build_dir/../install" ..
+          cmake --build . --target install -j 24
+
+      - uses: actions/cache/save@v4
+        if: always() && steps.cache-gtest.outputs.cache-hit != 'true'
+        with:
+          path: ${{ github.workspace }}/googletest
+          key: googletest-${{ inputs.GTEST_VERSION }}
+
+      - name: Setup GoogleTest
+        shell: bash
+        run: |
+          gtest_dir="$GITHUB_WORKSPACE/googletest/install"
+          {
+              echo "CPATH=$gtest_dir/include:$CPATH"
+              echo "LIBRARY_PATH=$gtest_dir/lib:$LIBRARY_PATH"
+          } >> "$GITHUB_ENV"
