@@ -15,7 +15,6 @@ jobs:
         with:
           ref: sycl-develop
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Configure user
         run: |
