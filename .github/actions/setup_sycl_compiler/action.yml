@@ -9,7 +9,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/cache/restore@v4.1.2
+    - uses: actions/cache/restore@v4.2.0
       id: cache-sycl
       with:
         path: ${{ github.workspace }}/sycl
@@ -23,7 +23,7 @@ runs:
         --compiler-version ${{ inputs.SYCL_COMPILER_VERSION }}
         --destination "${{ github.workspace }}/sycl"
 
-    - uses: actions/cache/save@v4.1.2
+    - uses: actions/cache/save@v4.2.0
       if: always() && steps.cache-sycl.outputs.cache-hit != 'true'
       with:
         path: ${{ github.workspace }}/sycl
