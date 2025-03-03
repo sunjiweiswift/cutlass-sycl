@@ -38,7 +38,7 @@ jobs:
         if: failure() || success()
         run: |
           if git ls-files -u | grep -q '.github'; then
-            git rm -r .github
+            git rm -r -f .github
             git checkout HEAD -- .github
             git commit --no-edit
           fi
