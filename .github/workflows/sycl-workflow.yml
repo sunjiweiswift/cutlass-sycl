@@ -5,11 +5,11 @@ on:
     branches: [ sycl-develop ]
 
 env:
-  DRIVER_BRANCH: ci/comp_igc
-  DRIVER_VERSION: gfx-driver-ci-comp_igc-25012
-  DRIVER_REPO: gfx-driver-builds
-  DRIVER_PATH: artifacts/Linux/Ubuntu/22.04/Release
-  SYCL_COMPILER_VERSION: nightly-2024-11-07
+  DRIVER_BRANCH: ci/hotfix_agama-ci-devel-1077
+  DRIVER_VERSION: hotfix_agama-ci-devel-1077.18
+  DRIVER_REPO: agama-builds
+  DRIVER_PATH: artifacts/linux/ubuntu/22.04
+  SYCL_COMPILER_VERSION: nightly-2025-02-19
   HOME: /tmp/home
 
 jobs:
