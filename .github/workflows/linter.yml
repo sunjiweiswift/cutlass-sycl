@@ -43,4 +43,3 @@ jobs:
           VALIDATE_YAML: true
           YAML_CONFIG_FILE: .yamllint
           ENABLE_GITHUB_ACTIONS_STEP_SUMMARY: false
-          SAVE_SUPER_LINTER_SUMMARY: false
