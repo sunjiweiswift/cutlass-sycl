@@ -17,7 +17,7 @@ class Layout(Base):
 class CUTLASSBenchmark(Base):
     __tablename__ = "cutlass_benchmark"
     __table_args__ = (
-        UniqueConstraint("run_id", "layout_id", "alpha", "beta", "batch", "m", "k", "n"),
+        UniqueConstraint("run_id", "layout_id", "name", "alpha", "beta", "batch", "m", "k", "n"),
         {"schema": "cutlass_benchmarks"},
     )
 

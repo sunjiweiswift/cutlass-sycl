@@ -129,9 +129,8 @@ def insert_cutlass_benchmark_data(
         tests_stmt = insert(CUTLASSBenchmark).values(tests_data)
 
         tests_stmt = tests_stmt.on_conflict_do_update(
-            index_elements=["run_id", "layout_id", "alpha", "beta", "batch", "m", "k", "n"],
+            index_elements=["run_id", "layout_id", "name", "alpha", "beta", "batch", "m", "k", "n"],
             set_={
-                "name": tests_stmt.excluded.name,
                 "real_time": tests_stmt.excluded.real_time,
                 "cpu_time": tests_stmt.excluded.cpu_time,
                 "total_runtime_ms": tests_stmt.excluded.total_runtime_ms,
