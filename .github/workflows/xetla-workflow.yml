@@ -118,14 +118,14 @@ jobs:
         uses: ./.github/actions/build_tests
         with:
           PROJECT: xetla
-          TARGETS: ${{ join(matrix.tests, ' ') }}
+          TARGETS: ${{ matrix.tests }}
         continue-on-error: true
 
       - name: Run tests
         uses: ./.github/actions/run_tests
         with:
           PROJECT: xetla
-          TARGETS: ${{ join(matrix.tests, ' ') }}
+          TARGETS: ${{ matrix.tests }}
         continue-on-error: true
 
       - name: Upload results
