@@ -1,23 +1,21 @@
-from models.common import Run
-from sqlalchemy import Column, Float, ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from typing import Optional
 
-Base = declarative_base()
+from models.common import CommonBaseModel, Run
+from sqlalchemy import Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
-class XeTLABenchmark(Base):
-    __tablename__ = "xetla_benchmark"
-    __table_args__ = (UniqueConstraint("run_id", "batch", "m", "k", "n"), {"schema": "cutlass_benchmarks"})
+class XetlaBenchmark(CommonBaseModel):
+    __table_args__ = (UniqueConstraint("run_id", "batch", "m", "k", "n"),)
 
-    test_id = Column(Integer, primary_key=True)
-    run_id = Column(Integer, ForeignKey(Run.run_id))
-    batch = Column(Integer)
-    m = Column(Integer)
-    k = Column(Integer)
-    n = Column(Integer)
-    tflops = Column(Float)
-    hbm = Column(Float)
-    status = Column(String(255))
+    test_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey(Run.run_id))
+    batch: Mapped[int] = mapped_column(Integer)
+    m: Mapped[int] = mapped_column(Integer)
+    k: Mapped[int] = mapped_column(Integer)
+    n: Mapped[int] = mapped_column(Integer)
+    tflops: Mapped[Optional[float]] = mapped_column(Float)
+    hbm: Mapped[Optional[float]] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(255))
 
     run = relationship(Run)

@@ -4,105 +4,63 @@ import os
 import sys
 from parser import BenchmarkType
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
+import numpy as np
 import pandas as pd
-from models.common import DataType, Platform, Reference, Run, RunType
-from models.cutlass import CUTLASSBenchmark, Layout
-from models.xetla import XeTLABenchmark
-from sqlalchemy import create_engine, select, tuple_
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.engine.base import Engine
-from sqlalchemy.orm import Session
+from models.common import CommonBaseModel, DataType, Platform, Reference, Run, RunType
+from models.cutlass import CutlassBenchmark, Layout
+from models.utils import create_or_update, get_or_create, split_unique_values
+from models.xetla import XetlaBenchmark
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+ignore = CommonBaseModel
 
 logging.basicConfig()
 logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
-
-def insert_run(engine, data: pd.DataFrame):
-    with Session(engine) as session:
-        references_data: List[Dict] = data[["sha", "branch"]].drop_duplicates().to_dict("records")
-        run_types_data: List[Dict] = (
-            data[["run_type"]].drop_duplicates().rename(columns={"run_type": "type"}).to_dict("records")
-        )
-        platforms_data: List[Dict] = (
-            data[["platform"]].drop_duplicates().rename(columns={"platform": "name"}).to_dict("records")
-        )
-        data_types_data: List[Dict] = (
-            data[["data_type"]].drop_duplicates().rename(columns={"data_type": "type"}).to_dict("records")
-        )
-
-        session.execute(insert(Reference).on_conflict_do_nothing(index_elements=["sha"]), references_data)
-        session.execute(insert(RunType).on_conflict_do_nothing(index_elements=["type"]), run_types_data)
-        session.execute(insert(Platform).on_conflict_do_nothing(index_elements=["name"]), platforms_data)
-        session.execute(insert(DataType).on_conflict_do_nothing(index_elements=["type"]), data_types_data)
-
-        run_type_ids = {rt.type: rt.run_type_id for rt in session.query(RunType.type, RunType.run_type_id)}
-        platform_ids = {p.name: p.platform_id for p in session.query(Platform.name, Platform.platform_id)}
-        data_type_ids = {dt.type: dt.data_type_id for dt in session.query(DataType.type, DataType.data_type_id)}
-
-        data["run_type_id"] = data["run_type"].map(run_type_ids)
-        data["platform_id"] = data["platform"].map(platform_ids)
-        data["data_type_id"] = data["data_type"].map(data_type_ids)
-
-        run_data: List[Dict] = (
-            data[["sha", "run_type_id", "platform_id", "data_type_id"]]
-            .copy()
-            .rename(columns={"sha": "reference"})
-            .drop_duplicates()
-            .to_dict("records")
-        )
-        session.execute(
-            insert(Run).on_conflict_do_nothing(
-                index_elements=["run_type_id", "reference", "platform_id", "data_type_id"]
-            ),
-            run_data,
-        )
-
-        session.commit()
+run_columns = ["run_type", "sha", "branch", "platform", "data_type"]
 
 
-def get_run_id(engine, data: pd.DataFrame):
-    with Session(engine) as session:
-        unique_runs = data[["run_type", "sha", "platform", "data_type"]].drop_duplicates().values.tolist()
-        stmt = (
-            select(Run.run_id, RunType.type, Reference.sha, Platform.name, DataType.type)
-            .join(RunType, Run.run_type_id == RunType.run_type_id)
-            .join(Reference, Run.reference == Reference.sha)
-            .join(Platform, Run.platform_id == Platform.platform_id)
-            .join(DataType, Run.data_type_id == DataType.data_type_id)
-            .where(tuple_(RunType.type, Reference.sha, Platform.name, DataType.type).in_(unique_runs))
-        )
-
-        runs_data = pd.DataFrame(
-            session.execute(stmt).fetchall(), columns=["run_id", "run_type", "sha", "platform", "data_type"]
-        )
-
-        session.commit()
-
-        return pd.merge(data, runs_data, on=["run_type", "sha", "platform", "data_type"], how="left")
+def convert_to_native_type(value) -> Any:
+    if value == "nan" or pd.isna(value):
+        return None
+    elif isinstance(value, np.generic):
+        return value.item()
+    else:
+        return value
 
 
-def insert_cutlass_benchmark_data(
-    engine: Engine,
-    data: pd.DataFrame,
-):
-    with Session(engine) as session:
-        layout_data: List[Dict] = (
-            data[["layout"]].drop_duplicates().rename(columns={"layout": "name"}).to_dict("records")
-        )
+def construct_run_item(session: Session, data: dict):
+    reference = get_or_create(
+        session, Reference, lookup_by={"sha": data["sha"]}, sha=data["sha"], branch=data["branch"]
+    )
 
-        session.execute(insert(Layout).on_conflict_do_nothing(index_elements=["name"]), layout_data)
+    run_type = get_or_create(session, RunType, type=data["run_type"])
+    platform = get_or_create(session, Platform, name=data["platform"])
+    data_type = get_or_create(session, DataType, type=data["data_type"])
 
-        layout_ids = {lt.name: lt.layout_id for lt in session.query(Layout.name, Layout.layout_id)}
+    run = get_or_create(
+        session, Run, run_type=run_type, reference_rel=reference, platform=platform, data_type=data_type
+    )
 
-        data["layout_id"] = data["layout"].map(layout_ids)
+    session.flush()
+
+    return run
+
+
+def construct_cutlass_benchmark_data(session: Session, data: pd.DataFrame, run: Run):
+    grouped = data.groupby(["layout"])
+
+    for name, group in grouped:
+        layout_data = {col: convert_to_native_type(val) for col, val in zip(grouped.keys, name)}
+
+        layout = get_or_create(session, Layout, name=layout_data["layout"])
 
         tests_data: List[Dict] = (
-            data[
+            group[
                 [
-                    "run_id",
-                    "layout_id",
                     "name",
                     "real_time",
                     "cpu_time",
@@ -126,55 +84,39 @@ def insert_cutlass_benchmark_data(
             .to_dict("records")
         )
 
-        tests_stmt = insert(CUTLASSBenchmark).values(tests_data)
+        for test_data in tests_data:
+            unique_data, variable_data = split_unique_values(CutlassBenchmark, test_data)
+            create_or_update(
+                session, CutlassBenchmark, update_by={**unique_data, "run": run, "layout": layout}, **variable_data
+            )
 
-        tests_stmt = tests_stmt.on_conflict_do_update(
-            index_elements=["run_id", "layout_id", "name", "alpha", "beta", "batch", "m", "k", "n"],
-            set_={
-                "real_time": tests_stmt.excluded.real_time,
-                "cpu_time": tests_stmt.excluded.cpu_time,
-                "total_runtime_ms": tests_stmt.excluded.total_runtime_ms,
-                "avg_runtime_ms": tests_stmt.excluded.avg_runtime_ms,
-                "avg_tflops": tests_stmt.excluded.avg_tflops,
-                "avg_throughput": tests_stmt.excluded.avg_throughput,
-                "best_bandwidth": tests_stmt.excluded.best_bandwidth,
-                "best_runtime_ms": tests_stmt.excluded.best_runtime_ms,
-                "best_tflop": tests_stmt.excluded.best_tflop,
-                "status": tests_stmt.excluded.status,
-            },
-        )
-
-        session.execute(tests_stmt)
-
-        session.commit()
+    session.flush()
 
 
-def insert_xetla_benchmark_data(
-    engine: Engine,
-    data: pd.DataFrame,
-):
-    with Session(engine) as session:
-        tests_data: List[Dict] = (
-            data[["run_id", "batch", "m", "k", "n", "tflops", "hbm", "status"]]
-            .drop_duplicates(subset=["run_id", "batch", "m", "k", "n"])
-            .copy()
-            .to_dict("records")
-        )
+def construct_xetla_benchmark_data(session: Session, data: pd.DataFrame, run: Run):
+    tests_data: List[Dict] = (
+        data[["batch", "m", "k", "n", "tflops", "hbm", "status"]]
+        .drop_duplicates(subset=["batch", "m", "k", "n"])
+        .copy()
+        .to_dict("records")
+    )
 
-        tests_stmt = insert(XeTLABenchmark).values(tests_data)
+    for test_data in tests_data:
+        unique_data, variable_data = split_unique_values(XetlaBenchmark, test_data)
+        create_or_update(session, XetlaBenchmark, update_by={**unique_data, "run": run}, **variable_data)
 
-        tests_stmt = tests_stmt.on_conflict_do_update(
-            index_elements=["run_id", "batch", "m", "k", "n"],
-            set_={
-                "tflops": tests_stmt.excluded.tflops,
-                "hbm": tests_stmt.excluded.hbm,
-                "status": tests_stmt.excluded.status,
-            },
-        )
+    session.flush()
 
-        session.execute(tests_stmt)
 
-        session.commit()
+def prepare_transaction(session: Session, data: pd.DataFrame, construct_benchmark_data):
+    grouped = data.groupby([col for col in run_columns if col in data.columns])
+
+    for name, group in grouped:
+        run_data = {col: convert_to_native_type(val) for col, val in zip(grouped.keys, name)}
+
+        run = construct_run_item(session, run_data)
+
+        construct_benchmark_data(session, group, run)
 
 
 def cli_target():
@@ -200,12 +142,13 @@ def cli_target():
     data = pd.read_csv(args.csv_data_file)
     data = data.replace("", None)
 
-    insert_run(engine, data)
-    data = get_run_id(engine, data)  # get run_id column according to run details
+    construct_benchmark_data = getattr(sys.modules[__name__], f"construct_{args.benchmark_type.value}_benchmark_data")
 
-    insert_benchmark_data = getattr(sys.modules[__name__], f"insert_{args.benchmark_type.value}_benchmark_data")
+    db_session = sessionmaker(engine)
 
-    insert_benchmark_data(engine, data)
+    with db_session() as session:
+        prepare_transaction(session, data, construct_benchmark_data)
+        session.commit()
 
 
 if __name__ == "__main__":
