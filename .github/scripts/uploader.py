@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import sys
@@ -9,7 +10,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 from models.common import CommonBaseModel, DataType, Platform, Reference, Run, RunType
-from models.cutlass import CutlassBenchmark, Layout
+from models.cutlass import CutlassBenchmarkV2, Layout, TestConfiguration
 from models.utils import create_or_update, get_or_create, split_unique_values
 from models.xetla import XetlaBenchmark
 from sqlalchemy import create_engine
@@ -21,6 +22,19 @@ logging.basicConfig()
 logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
 run_columns = ["run_type", "sha", "branch", "platform", "data_type"]
+cutlass_result_columns = [
+    "name",
+    "real_time",
+    "cpu_time",
+    "total_runtime_ms",
+    "avg_runtime_ms",
+    "avg_tflops",
+    "avg_throughput",
+    "best_bandwidth",
+    "best_runtime_ms",
+    "best_tflop",
+    "status",
+]
 
 
 def convert_to_native_type(value) -> Any:
@@ -51,44 +65,34 @@ def construct_run_item(session: Session, data: dict):
 
 
 def construct_cutlass_benchmark_data(session: Session, data: pd.DataFrame, run: Run):
-    grouped = data.groupby(["layout"])
+    layout_grouped = data.groupby(["layout"])
 
-    for name, group in grouped:
-        layout_data = {col: convert_to_native_type(val) for col, val in zip(grouped.keys, name)}
-
+    for name, layout_group in layout_grouped:
+        layout_data = {col: convert_to_native_type(val) for col, val in zip(layout_grouped.keys, name)}
         layout = get_or_create(session, Layout, name=layout_data["layout"])
 
-        tests_data: List[Dict] = (
-            group[
-                [
-                    "name",
-                    "real_time",
-                    "cpu_time",
-                    "total_runtime_ms",
-                    "avg_runtime_ms",
-                    "avg_tflops",
-                    "avg_throughput",
-                    "best_bandwidth",
-                    "best_runtime_ms",
-                    "best_tflop",
-                    "alpha",
-                    "beta",
-                    "batch",
-                    "m",
-                    "k",
-                    "n",
-                    "status",
-                ]
-            ]
-            .copy()
-            .to_dict("records")
-        )
+        config_columns = layout_group.columns.drop(cutlass_result_columns + run_columns + ["layout"]).to_list()
+        config_grouped = layout_group.groupby([col for col in config_columns])
 
-        for test_data in tests_data:
-            unique_data, variable_data = split_unique_values(CutlassBenchmark, test_data)
-            create_or_update(
-                session, CutlassBenchmark, update_by={**unique_data, "run": run, "layout": layout}, **variable_data
-            )
+        for params, config_group in config_grouped:
+            config_data = {}
+            for col, val in zip(config_grouped.keys, params):
+                converted_val = convert_to_native_type(val)
+                if converted_val != type(converted_val)(-1):
+                    config_data[col] = converted_val
+
+            test_configuration = get_or_create(session, TestConfiguration, parameters=json.dumps(config_data))
+
+            tests_data: List[Dict] = config_group[cutlass_result_columns].replace(-1, 0).copy().to_dict("records")
+
+            for test_data in tests_data:
+                unique_data, variable_data = split_unique_values(CutlassBenchmarkV2, test_data)
+                create_or_update(
+                    session,
+                    CutlassBenchmarkV2,
+                    update_by={**unique_data, "run": run, "layout": layout, "test_configuration": test_configuration},
+                    **variable_data,
+                )
 
     session.flush()
 

@@ -68,10 +68,9 @@ class CUTLASSParser(Parser):
             axis=1,
         )
 
-        df = df.rename(columns={"l": "batch", "label": "layout"})
+        df = df.rename(columns={"label": "layout"})
 
-        df = df.fillna({"alpha": 0, "beta": 0, "m": 0, "k": 0, "n": 0, "batch": 0})
-        df[["alpha", "beta", "m", "k", "n", "batch"]] = df[["alpha", "beta", "m", "k", "n", "batch"]].astype(int)
+        df = df.fillna(-1)
 
         df.drop(
             [
@@ -85,13 +84,14 @@ class CUTLASSParser(Parser):
                 "iterations",
                 "error_occurred",
                 "error_message",
+                "time_unit",
             ],
             axis=1,
             inplace=True,
             errors="ignore",
         )
 
-        df = df.drop_duplicates(subset=["name", "alpha", "beta", "m", "k", "n", "batch", "data_type", "layout"])
+        df = df.drop_duplicates(subset=["name", "data_type", "layout"])
 
         return df
 
