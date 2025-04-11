@@ -146,6 +146,14 @@ jobs:
           PLATFORM: ${{ matrix.runner }}
           INPUT: ${{ matrix.input }}
 
+      - name: Construct commit with timestamp
+        if: matrix.test_kind == 'benchmarks'
+        run: |
+          export TZ=UTC
+          COMMIT=${{ github.event.pull_request.head.sha || github.sha }}
+          TIMESTAMP=$(git show -s --date=iso-strict-local --format=%cd $COMMIT | sed 's/+00:00/Z/')
+          echo "TIMESTAMP_COMMIT=${TIMESTAMP}_${COMMIT}" >> "$GITHUB_ENV"
+
       - name: Upload results
         if: matrix.test_kind == 'benchmarks'
         uses: ./.github/actions/upload-results
@@ -156,7 +164,7 @@ jobs:
           BENCHMARK_TYPE: cutlass
           RUN_INFO: >
             branch=${{ github.event.pull_request.head.ref || github.ref_name }}
-            sha=${{ github.event.pull_request.head.sha || github.sha }}
+            sha=$TIMESTAMP_COMMIT
             platform=${{ matrix.runner }}
             run_type=sycl
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
