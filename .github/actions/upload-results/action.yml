@@ -5,7 +5,7 @@ inputs:
   LOGS_DIR:
     required: true
   LOG_FILE_NAME:
-    required: true
+    required: false
   ARTIFACT_NAME:
     required: true
   BENCHMARK_TYPE:
@@ -27,20 +27,42 @@ runs:
         python3.12 -m venv "$venv"
         source "$venv/bin/activate"
         pip install pandas
-        log_file="${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.log"
-
-        # produces CSV file with the same name as log file
-        python ${{ github.workspace }}/.github/scripts/parser.py \
-          --benchmark-type ${{ inputs.BENCHMARK_TYPE }} \
-          --log-file "$log_file" \
-          --run-info ${{ inputs.RUN_INFO }}
-
-        # check if the CSV file was created
-        if [ ! -f "${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.csv" ]; then
-          echo "Failed to parse test results"
-          echo "PARSING_FAILED=1" >> $GITHUB_OUTPUT
-          exit 1
+                
+        if [ -n "${{ inputs.LOG_FILE_NAME }}" ]; then
+          log_files="${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.log"
+        else
+          log_files=(${{ inputs.LOGS_DIR }}/*.log)
         fi
+        
+        csv_files=()
+        
+        for log_file in "${log_files[@]}"; do
+          if [[ $log_file =~ .*/[^_]+_(.*)_benchmarks\.log ]]; then
+              group="${BASH_REMATCH[1]}"
+              RUN_INFO="${{ inputs.RUN_INFO }} tag=$group"
+          elif [[ $log_file =~ (.*)_benchmarks\.log ]]; then
+              group="Default"
+              RUN_INFO="${{ inputs.RUN_INFO }} tag=$group"
+          fi
+          
+          # produces CSV file with the same name as log file
+          python ${{ github.workspace }}/.github/scripts/parser.py \
+            --benchmark-type ${{ inputs.BENCHMARK_TYPE }} \
+            --log-file "$log_file" \
+            --run-info $RUN_INFO
+          
+          # check if the CSV file was created
+          csv_file="${log_file%.log}.csv"
+          if [ ! -f "$csv_file" ]; then
+            echo "Failed to parse test results"
+            echo "PARSING_FAILED=1" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          csv_files+=("$csv_file")
+        done
+        
+        echo "CSV_FILES=$(IFS='|'; echo "${csv_files[*]}")" >> "$GITHUB_ENV"
 
     - name: Upload to DB
       if: steps.parse_results.outcome == 'success' && steps.parse_results.outputs.PARSING_FAILED != '1'
@@ -53,15 +75,19 @@ runs:
         python3.12 -m venv "$venv"
         source "$venv/bin/activate"
         pip install pandas sqlalchemy psycopg2-binary
-
-        python ${{ github.workspace }}/.github/scripts/uploader.py \
-          --benchmark-type ${{ inputs.BENCHMARK_TYPE }} \
-          --csv-data-file ${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.csv
+        
+        IFS="|" read -ra csv_files <<< "$CSV_FILES"
+        
+        for csv_file in "${csv_files[@]}"; do
+          python ${{ github.workspace }}/.github/scripts/uploader.py \
+            --benchmark-type ${{ inputs.BENCHMARK_TYPE }} \
+            --csv-data-file $csv_file
+        done
 
     - name: Attach CSV
       if: steps.parse_results.outcome == 'success' && steps.parse_results.outputs.PARSING_FAILED != '1'
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.ARTIFACT_NAME }}.csv
-        path: ${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.csv
+        name: ${{ inputs.ARTIFACT_NAME }}
+        path: ${{ inputs.LOGS_DIR }}/*.csv
         if-no-files-found: warn

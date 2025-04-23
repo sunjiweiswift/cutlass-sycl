@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 from models.common import CommonBaseModel, DataType, Platform, Reference, Run, RunType
-from models.cutlass import CutlassBenchmarkV2, Layout, TestConfiguration
+from models.cutlass import CutlassBenchmarkV2, Layout, TestConfiguration, TestGroup
 from models.utils import create_or_update, get_or_create, split_unique_values
 from models.xetla import XetlaBenchmark
 from sqlalchemy import create_engine
@@ -65,13 +65,16 @@ def construct_run_item(session: Session, data: dict):
 
 
 def construct_cutlass_benchmark_data(session: Session, data: pd.DataFrame, run: Run):
+
+    test_group = get_or_create(session, TestGroup, tag=data["tag"].iloc[0])
+
     layout_grouped = data.groupby(["layout"])
 
     for name, layout_group in layout_grouped:
         layout_data = {col: convert_to_native_type(val) for col, val in zip(layout_grouped.keys, name)}
         layout = get_or_create(session, Layout, name=layout_data["layout"])
 
-        config_columns = layout_group.columns.drop(cutlass_result_columns + run_columns + ["layout"]).to_list()
+        config_columns = layout_group.columns.drop(cutlass_result_columns + run_columns + ["layout", "tag"]).to_list()
         config_grouped = layout_group.groupby([col for col in config_columns])
 
         for params, config_group in config_grouped:
@@ -90,7 +93,13 @@ def construct_cutlass_benchmark_data(session: Session, data: pd.DataFrame, run: 
                 create_or_update(
                     session,
                     CutlassBenchmarkV2,
-                    update_by={**unique_data, "run": run, "layout": layout, "test_configuration": test_configuration},
+                    update_by={
+                        **unique_data,
+                        "run": run,
+                        "layout": layout,
+                        "test_configuration": test_configuration,
+                        "test_group": test_group,
+                    },
                     **variable_data,
                 )
 
