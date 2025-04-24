@@ -4,8 +4,13 @@ description: Common action to parse and upload test results
 inputs:
   LOGS_DIR:
     required: true
+    description: Log files directory
+  LOG_FILES_REGEX:
+    required: false
+    description: Regex to match multiple log files to upload, if regex group specified results will be tagged using first group
   LOG_FILE_NAME:
     required: false
+    description: Name of specific log file to upload, if passed with regex results will be tagged using first group
   ARTIFACT_NAME:
     required: true
   BENCHMARK_TYPE:
@@ -30,19 +35,18 @@ runs:
                 
         if [ -n "${{ inputs.LOG_FILE_NAME }}" ]; then
           log_files="${{ inputs.LOGS_DIR }}/${{ inputs.LOG_FILE_NAME }}.log"
+        elif [ -n "${{ inputs.LOG_FILES_REGEX }}" ]; then
+          readarray -t log_files < <(find ${{ inputs.LOGS_DIR }} -type f | grep -E "${{ inputs.LOG_FILES_REGEX }}\.log")
         else
           log_files=(${{ inputs.LOGS_DIR }}/*.log)
         fi
         
         csv_files=()
         
-        for log_file in "${log_files[@]}"; do
-          if [[ $log_file =~ .*/[^_]+_(.*)_benchmarks\.log ]]; then
+        for log_file in "${log_files[@]}"; do        
+          if [[ $log_file =~ .*/${{ inputs.LOG_FILES_REGEX }}\.log ]]; then
               group="${BASH_REMATCH[1]}"
-              RUN_INFO="${{ inputs.RUN_INFO }} tag=$group"
-          elif [[ $log_file =~ (.*)_benchmarks\.log ]]; then
-              group="Default"
-              RUN_INFO="${{ inputs.RUN_INFO }} tag=$group"
+              if [[ -n $group ]]; then RUN_INFO="${{ inputs.RUN_INFO }} tag=$group"; fi
           fi
           
           # produces CSV file with the same name as log file

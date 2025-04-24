@@ -93,6 +93,7 @@ jobs:
         uses: ./.github/actions/upload-results
         with:
           LOGS_DIR: ${{ github.workspace }}/outputs/testing
+          LOG_FILES_REGEX: "[^_]+_(.*)_benchmarks"
           ARTIFACT_NAME: cutlass_cuda_${{ matrix.runner }}_benchmarks
           BENCHMARK_TYPE: cutlass
           RUN_INFO: >
