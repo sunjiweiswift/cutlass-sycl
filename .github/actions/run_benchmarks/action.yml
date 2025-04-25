@@ -26,11 +26,7 @@ runs:
         export BENCHMARK_FORMAT="console"
         export BENCHMARK_OUT_FORMAT="json"
         
-        input_files=($GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/*.in)
-        
-        if [ ! -e "${input_files[0]}" ]; then
-          input_files=($GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/input_files/*.in)
-        fi
+        input_files=($GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/input_files/*.in)
         
         for input_file in "${input_files[@]}"; do
           if [[ $input_file =~ .*input_(.*)\.in$ ]]; then
