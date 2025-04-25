@@ -28,13 +28,16 @@ runs:
         
         input_files=($GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/*.in)
         
-        for input_file in "${input_files[@]}"; do
+        if [ ! -e "${input_files[0]}" ]; then
+          input_files=($GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/input_files/*.in)
+        fi
         
-            if [[ $input_file =~ .*input_(.*)\.in$ ]]; then
-              group="${BASH_REMATCH[1]}"
-            else
-              group="Default"
-            fi
+        for input_file in "${input_files[@]}"; do
+          if [[ $input_file =~ .*input_(.*)\.in$ ]]; then
+            group="${BASH_REMATCH[1]}"
+          else
+            group="Default"
+          fi
         
           export BENCHMARK_OUT="$benchmarks_output/${{ inputs.PLATFORM }}_"$group"_benchmarks.log"
         
