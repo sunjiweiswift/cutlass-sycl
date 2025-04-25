@@ -29,7 +29,7 @@ runs:
         input_files=($GITHUB_WORKSPACE/benchmarks/${{ inputs.INPUT }}/input_files/*.in)
         
         for input_file in "${input_files[@]}"; do
-          if [[ $input_file =~ .*input_(.*)\.in$ ]]; then
+          if [[ $input_file =~ .*/input_files/input_(.*)\.in$ ]]; then
             group="${BASH_REMATCH[1]}"
           else
             group="Default"
