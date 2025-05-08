@@ -37,4 +37,6 @@ runs:
         {
           echo "CPATH=$sycl_dir/include:$sycl_dir/include/sycl:$CPATH"
           echo "LD_LIBRARY_PATH=$sycl_dir/lib:$LD_LIBRARY_PATH"
+          echo "CC=clang"
+          echo "CXX=clang++"
         } >> "$GITHUB_ENV"

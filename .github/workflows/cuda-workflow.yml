@@ -28,9 +28,9 @@ jobs:
           - runner: a100
             test_kind: benchmarks
             cuda_target: "80"
-            cmake_options: -DCUTLASS_ENABLE_BENCHMARKS=ON
+            cmake_options: -DCUTLASS_ENABLE_SYCL=OFF -DCUTLASS_ENABLE_BENCHMARKS=ON -DDPCPP_SYCL_TARGET=nvptx64_nvidia_cuda -DDPCPP_SYCL_ARCH=sm_80 -DCUTLASS_ENABLE_TESTS=ON
             platform: nvidia_gpu
-            tests: benchmarks
+            tests: cutlass_benchmarks_gemm_cuda
             input: ampere
 
     runs-on: ${{ matrix.runner }}
@@ -79,6 +79,7 @@ jobs:
         with:
           PLATFORM: ${{ matrix.runner }}
           INPUT: ${{ matrix.input }}
+          DEFAULT_BENCHMARKS_BIN: ${{ github.workspace }}/build/benchmarks/gemm/cutlass_benchmarks_gemm_cuda
 
       - name: Construct commit with timestamp
         if: matrix.test_kind == 'benchmarks'

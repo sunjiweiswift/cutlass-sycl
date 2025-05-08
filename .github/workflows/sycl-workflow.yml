@@ -10,6 +10,7 @@ env:
   DRIVER_REPO: agama-builds
   DRIVER_PATH: artifacts/linux/ubuntu/22.04
   SYCL_COMPILER_VERSION: nightly-2025-02-19
+  INTEL_DPCPP_DOWNLOAD_URL: https://registrationcenter-download.intel.com/akdlm/IRC_NAS/cd63be99-88b0-4981-bea1-2034fe17f5cf/intel-dpcpp-cpp-compiler-2025.1.0.573_offline.sh
   HOME: /tmp/home
 
 jobs:
@@ -46,16 +47,16 @@ jobs:
           - runner: a100
             test_kind: benchmarks
             sycl_target: nvptx64-nvidia-cuda
-            cmake_options: -DDPCPP_SYCL_ARCH=sm_80 -DCUTLASS_ENABLE_SYCL=ON -DCUTLASS_ENABLE_BENCHMARKS=ON -DSYCL_NVIDIA_TARGET=ON -DCUTLASS_SYCL_PROFILING_ENABLED=ON
+            cmake_options: -DDPCPP_SYCL_ARCH=sm_80 -DCUTLASS_ENABLE_BENCHMARKS=ON -DSYCL_NVIDIA_TARGET=ON -DCUTLASS_SYCL_PROFILING_ENABLED=ON -DCUTLASS_ENABLE_TESTS=ON
             platform: nvidia_gpu
-            tests: benchmarks
+            tests: cutlass_benchmarks
             input: ampere
           - runner: pvc1100
             test_kind: benchmarks
             sycl_target: intel_gpu_pvc
-            cmake_options: -DSYCL_INTEL_TARGET=ON -DCUTLASS_ENABLE_SYCL=ON -DCUTLASS_ENABLE_BENCHMARKS=ON
+            cmake_options: -DSYCL_INTEL_TARGET=ON -DCUTLASS_ENABLE_BENCHMARKS=ON -DCUTLASS_ENABLE_TESTS=ON
             platform: intel_gpu
-            tests: benchmarks
+            tests: cutlass_benchmarks
             input: pvc
             env:
               IGC_ExtraOCLOptions: -cl-intel-256-GRF-per-thread
@@ -64,14 +65,30 @@ jobs:
           - runner: pvc1550
             test_kind: benchmarks
             sycl_target: intel_gpu_pvc
-            cmake_options: -DSYCL_INTEL_TARGET=ON -DCUTLASS_ENABLE_SYCL=ON -DCUTLASS_ENABLE_BENCHMARKS=ON
+            cmake_options: -DSYCL_INTEL_TARGET=ON -DCUTLASS_ENABLE_BENCHMARKS=ON -DCUTLASS_ENABLE_TESTS=ON
             platform: intel_gpu
-            tests: benchmarks
+            tests: cutlass_benchmarks
             input: pvc
             env:
               IGC_ExtraOCLOptions: -cl-intel-256-GRF-per-thread
               ONEAPI_DEVICE_SELECTOR: level_zero:gpu
               IGC_VectorAliasBBThreshold: 100000000000
+          - runner: BMG
+            test_kind: benchmarks
+            sycl_target: intel_gpu_bmg_g21
+            cmake_options: -DCUTLASS_ENABLE_BENCHMARKS=ON -DCUTLASS_ENABLE_TESTS=ON -DCUTLASS_SYCL_PROFILING_ENABLED=ON -DCMAKE_BUILD_TYPE=Release
+            platform: intel_gpu
+            tests: cutlass_benchmarks
+            input: bmg
+            env:
+              DRIVER_BRANCH: ci/devel
+              DRIVER_VERSION: agama-ci-devel-1131
+              DRIVER_PATH: artifacts/linux/ubuntu/24.04
+              IGC_ExtraOCLOptions: -cl-intel-256-GRF-per-thread
+              ONEAPI_DEVICE_SELECTOR: level_zero:gpu
+              IGC_VectorAliasBBThreshold: 100000000000
+              CMAKE_BUILD_TYPE: Release
+              IGC_VISAOptions: "-perfmodel"
 
     runs-on: ${{ matrix.runner }}
 
@@ -90,6 +107,10 @@ jobs:
           CB_USER: ${{ secrets.CB_USER }}
           CB_PASSWORD: ${{ secrets.CB_PASSWORD }}
 
+      - name: Set specific environment variables
+        if: ${{ matrix.env != null }}
+        run: echo '${{ toJson(matrix.env) }}'  | jq -r 'to_entries | .[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+
       - name: Setup Intel GPU driver
         if: matrix.platform == 'intel_gpu'
         uses: ./.github/actions/setup_driver
@@ -102,27 +123,25 @@ jobs:
           ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
 
       - name: Setup SYCL compiler
+        if: matrix.runner != 'BMG'
         uses: ./.github/actions/setup_sycl_compiler
         with:
           SYCL_COMPILER_VERSION: ${{ env.SYCL_COMPILER_VERSION }}
 
-      - name: Set specific environment variables
-        if: ${{ matrix.env != null }}
-        run: echo '${{ toJson(matrix.env) }}'  | jq -r 'to_entries | .[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+      - name: Setup Intel DPC++ Compiler
+        if: matrix.runner == 'BMG'
+        uses: ./.github/actions/setup_intel_dpcpp_compiler
+        with:
+          INTEL_DPCPP_DOWNLOAD_URL: ${{ env.INTEL_DPCPP_DOWNLOAD_URL }}
 
       - name: Configure CUTLASS project with SYCL support
-        run: |
-          sycl-ls
-
-          clang++ --version
-
+        run: |          
           mkdir -p build && cd build
 
           cmake -G Ninja \
                 -DCMAKE_CUDA_HOST_COMPILER=clang++ \
                 -DCUTLASS_ENABLE_SYCL=ON \
                 -DDPCPP_SYCL_TARGET=${{ matrix.sycl_target }} \
-                -DCMAKE_CXX_COMPILER=clang++ \
                 ${{ matrix.cmake_options }} \
                 ..
 
@@ -145,6 +164,7 @@ jobs:
         with:
           PLATFORM: ${{ matrix.runner }}
           INPUT: ${{ matrix.input }}
+          DEFAULT_BENCHMARKS_BIN: ${{ github.workspace }}/build/benchmarks/gemm/cutlass_benchmarks_gemm_sycl
 
       - name: Construct commit with timestamp
         if: matrix.test_kind == 'benchmarks'
