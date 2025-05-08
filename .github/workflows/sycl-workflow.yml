@@ -73,7 +73,7 @@ jobs:
               IGC_ExtraOCLOptions: -cl-intel-256-GRF-per-thread
               ONEAPI_DEVICE_SELECTOR: level_zero:gpu
               IGC_VectorAliasBBThreshold: 100000000000
-          - runner: BMG
+          - runner: bmg
             test_kind: benchmarks
             sycl_target: intel_gpu_bmg_g21
             cmake_options: -DCUTLASS_ENABLE_BENCHMARKS=ON -DCUTLASS_ENABLE_TESTS=ON -DCUTLASS_SYCL_PROFILING_ENABLED=ON -DCMAKE_BUILD_TYPE=Release
@@ -88,7 +88,7 @@ jobs:
               ONEAPI_DEVICE_SELECTOR: level_zero:gpu
               IGC_VectorAliasBBThreshold: 100000000000
               CMAKE_BUILD_TYPE: Release
-              IGC_VISAOptions: "-perfmodel"
+              IGC_VISAOptions: -perfmodel
 
     runs-on: ${{ matrix.runner }}
 
@@ -135,7 +135,7 @@ jobs:
           INTEL_DPCPP_DOWNLOAD_URL: ${{ env.INTEL_DPCPP_DOWNLOAD_URL }}
 
       - name: Configure CUTLASS project with SYCL support
-        run: |          
+        run: |
           mkdir -p build && cd build
 
           cmake -G Ninja \
