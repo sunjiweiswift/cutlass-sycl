@@ -21,7 +21,7 @@ ignore = CommonBaseModel
 logging.basicConfig()
 logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
-run_columns = ["run_type", "sha", "branch", "platform", "data_type"]
+run_columns = ["run_type", "sha", "branch", "platform", "data_type", "workflow"]
 cutlass_result_columns = [
     "name",
     "real_time",
@@ -56,7 +56,13 @@ def construct_run_item(session: Session, data: dict):
     data_type = get_or_create(session, DataType, type=data["data_type"])
 
     run = get_or_create(
-        session, Run, run_type=run_type, reference_rel=reference, platform=platform, data_type=data_type
+        session,
+        Run,
+        run_type=run_type,
+        reference_rel=reference,
+        platform=platform,
+        data_type=data_type,
+        workflow=data["workflow"],
     )
 
     session.flush()

@@ -141,4 +141,5 @@ jobs:
             platform=${{ matrix.runner }}
             data_type=${{ matrix.data_type }}
             run_type=xetla
+            workflow=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}

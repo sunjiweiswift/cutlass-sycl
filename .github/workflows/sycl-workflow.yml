@@ -198,6 +198,7 @@ jobs:
             sha=$TIMESTAMP_COMMIT
             platform=${{ matrix.runner }}
             run_type=sycl
+            workflow=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
       - name: Release nvidia ${{ matrix.runner }} resource

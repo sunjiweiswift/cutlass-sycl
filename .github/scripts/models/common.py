@@ -39,6 +39,7 @@ class Run(CommonBaseModel):
     reference: Mapped[str] = mapped_column(ForeignKey(Reference.sha))
     platform_id: Mapped[int] = mapped_column(ForeignKey(Platform.platform_id))
     data_type_id: Mapped[int] = mapped_column(ForeignKey(DataType.data_type_id))
+    workflow: Mapped[str] = mapped_column(String(255), nullable=False)
 
     run_type: Mapped[RunType] = relationship(RunType)
     reference_rel: Mapped[Reference] = relationship(Reference)
