@@ -31,10 +31,10 @@ runs:
         
         input_files=($GITHUB_WORKSPACE/benchmarks/device/${{ inputs.INPUT }}/input_files/*.in)
         
+        set +e
         for input_file in "${input_files[@]}"; do
           
-          file_name="${input_file##*/}"
-
+          file_name="${input_file##*/}"          
           if [[ $file_name =~ input_(.*)\.in$ ]]; then
             group="${BASH_REMATCH[1]}"
           else

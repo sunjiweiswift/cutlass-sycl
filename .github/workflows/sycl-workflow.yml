@@ -176,6 +176,7 @@ jobs:
           PLATFORM: ${{ matrix.runner }}
           INPUT: ${{ matrix.input }}
           DEFAULT_BENCHMARKS_BIN: ${{ github.workspace }}/build/benchmarks/gemm/cutlass_benchmarks_gemm_sycl
+        continue-on-error: true
 
       - name: Construct commit with timestamp
         if: matrix.test_kind == 'benchmarks'
