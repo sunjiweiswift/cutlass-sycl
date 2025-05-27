@@ -1,0 +1,95 @@
+name: codeplay install dpcpp
+description: Download and unpack DPC++ nightly release
+inputs:
+  DPCPP_RELEASE:
+    description: "Use RELEASE or NIGHTLY DPC++ release"
+    type: string
+    default: NIGHTLY
+  DPCPP_VERSION:
+    description: "DPC++ version to use"
+    type: string
+  DPCPP_PATH:
+    description: Path to DPC++
+    type: string
+    default: ~/dpcpp
+  GPU:
+    description: "Install for PVC or BMG gpu"
+    type: string
+  IGC:
+    description: "Use RELEASE of STAGING release"
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install DPCPP
+      if: inputs.DPCPP_RELEASE == 'NIGHTLY'
+      shell: bash
+      run: |
+        export no_proxy="127.0.0.1,localhost"
+        if [[ "${{ inputs.GPU }}" == "BMG" ]]; then
+          if [[ "${{ inputs.IGC }}" == "STAGING" ]]; then
+            sudo -E add-apt-repository ppa:kobuk-team/intel-graphics-staging
+          else
+            sudo -E add-apt-repository ppa:kobuk-team/intel-graphics
+          fi
+          sudo -E apt-get install -y libze-intel-gpu1 libze1 intel-metrics-discovery intel-opencl-icd clinfo intel-gsc
+          sudo -E apt-get install -y libze-dev intel-ocloc
+        fi
+        sudo -E apt update && sudo -E apt install -y intel-opencl-icd ocl-icd-opencl-dev g++
+        dpkg -l | grep libhwloc15 > /dev/null || sudo -E apt install -y libhwloc15
+        export DPCPP_PATH=${{ inputs.DPCPP_PATH }}
+        mkdir -p $DPCPP_PATH
+        pushd $DPCPP_PATH
+        if [[ "${{ inputs.DPCPP_VERSION }}" != "" ]]; then
+          echo "Will use DPCPP ${{ inputs.DPCPP_VERSION }}"
+          URL=https://github.com/intel/llvm/releases/download/${{ inputs.DPCPP_VERSION }}/sycl_linux.tar.gz;
+        else
+          echo "Will use latest DPCPP version"
+          latest=$(curl -sS https://api.github.com/repos/intel/llvm/releases | jq -r '[.[].tag_name|select(match("nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}"))][0]')
+          URL=https://github.com/intel/llvm/releases/download/${latest}/sycl_linux.tar.gz;
+        fi
+        echo "Downloading DPCPP from ${URL}"
+        sudo -E wget -q $URL
+        sudo -E tar -xf sycl_linux.tar.gz
+        sudo -E rm sycl_linux.tar.gz
+        popd
+        echo "$PATH" >> "$GITHUB_PATH"
+        {
+          echo "PATH=$DPCPP_PATH/bin:$PATH"
+          echo "C_INCLUDE_PATH=$DPCPP_PATH/include:$C_INCLUDE_PATH"
+          echo "CPLUS_INCLUDE_PATH=$DPCPP_PATH/include:$CPLUS_INCLUDE_PATH"
+          echo "LD_LIBRARY_PATH=$DPCPP_PATH/lib:$LD_LIBRARY_PATH"
+          echo "CC=$DPCPP_PATH/bin/clang"
+          echo "CXX=$DPCPP_PATH/bin/clang++"
+        } >> "$GITHUB_ENV"
+
+    - name: Install DPCPP
+      if: inputs.DPCPP_RELEASE == 'RELEASE'
+      shell: bash
+      run: |
+        export no_proxy="127.0.0.1,localhost"
+        if [[ "${{ inputs.GPU }}" == "BMG" ]]; then
+          if [[ "${{ inputs.IGC }}" == "STAGING" ]]; then
+            sudo -E add-apt-repository ppa:kobuk-team/intel-graphics-staging
+          else
+            sudo -E add-apt-repository ppa:kobuk-team/intel-graphics
+          fi
+          sudo -E apt-get install -y libze-intel-gpu1 libze1 intel-metrics-discovery intel-opencl-icd clinfo intel-gsc
+          sudo -E apt-get install -y libze-dev intel-ocloc
+        fi
+        wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+        sudo -E apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+        rm GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+        echo "deb https://apt.repos.intel.com/oneapi all main" | sudo -E tee /etc/apt/sources.list.d/oneAPI.list
+        sudo -E apt update
+        sudo -E apt install -y intel-oneapi-runtime-libs intel-oneapi-compiler-dpcpp-cpp
+        source /opt/intel/oneapi/setvars.sh
+        echo "$PATH" >> "$GITHUB_PATH"
+        {
+          echo "CC=icx"
+          echo "CXX=icpx"
+          echo "C_INCLUDE_PATH=$CMPLR_ROOT/include:$C_INCLUDE_PATH"
+          echo "CPLUS_INCLUDE_PATH=$CMPLR_ROOT/include:$CPLUS_INCLUDE_PATH"
+          echo "LD_LIBRARY_PATH=$CMPLR_ROOT/lib:$LD_LIBRARY_PATH"
+        } >> "$GITHUB_ENV"

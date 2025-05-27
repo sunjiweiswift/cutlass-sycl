@@ -31,8 +31,15 @@ class DataType(CommonBaseModel):
     type: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
 
 
+class ComponentSet(CommonBaseModel):
+    component_set_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    configuration: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+
+
 class Run(CommonBaseModel):
-    __table_args__ = (UniqueConstraint("platform_id", "reference", "run_type_id", "data_type_id"),)
+    __table_args__ = (
+        UniqueConstraint("platform_id", "reference", "run_type_id", "data_type_id", "workflow", "component_set_id"),
+    )
 
     run_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_type_id: Mapped[int] = mapped_column(ForeignKey(RunType.run_type_id))
@@ -40,8 +47,10 @@ class Run(CommonBaseModel):
     platform_id: Mapped[int] = mapped_column(ForeignKey(Platform.platform_id))
     data_type_id: Mapped[int] = mapped_column(ForeignKey(DataType.data_type_id))
     workflow: Mapped[str] = mapped_column(String(255), nullable=False)
+    component_set_id: Mapped[int] = mapped_column(ForeignKey(ComponentSet.component_set_id))
 
     run_type: Mapped[RunType] = relationship(RunType)
     reference_rel: Mapped[Reference] = relationship(Reference)
     platform: Mapped[Platform] = relationship(Platform)
     data_type: Mapped[DataType] = relationship(DataType)
+    component_set: Mapped[DataType] = relationship(ComponentSet)

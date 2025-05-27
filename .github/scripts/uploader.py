@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
-from models.common import CommonBaseModel, DataType, Platform, Reference, Run, RunType
+from models.common import CommonBaseModel, ComponentSet, DataType, Platform, Reference, Run, RunType
 from models.cutlass import CutlassBenchmarkV2, Layout, TestConfiguration, TestGroup
 from models.utils import create_or_update, get_or_create, split_unique_values
 from models.xetla import XetlaBenchmark
@@ -21,7 +21,7 @@ ignore = CommonBaseModel
 logging.basicConfig()
 logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
-run_columns = ["run_type", "sha", "branch", "platform", "data_type", "workflow"]
+run_columns = ["run_type", "sha", "branch", "platform", "data_type", "workflow", "compiler", "driver"]
 cutlass_result_columns = [
     "name",
     "real_time",
@@ -54,6 +54,9 @@ def construct_run_item(session: Session, data: dict):
     run_type = get_or_create(session, RunType, type=data["run_type"])
     platform = get_or_create(session, Platform, name=data["platform"])
     data_type = get_or_create(session, DataType, type=data["data_type"])
+    component_set = get_or_create(
+        session, ComponentSet, configuration=json.dumps(dict(compiler=data["compiler"], driver=data["driver"]))
+    )
 
     run = get_or_create(
         session,
@@ -63,6 +66,7 @@ def construct_run_item(session: Session, data: dict):
         platform=platform,
         data_type=data_type,
         workflow=data["workflow"],
+        component_set=component_set,
     )
 
     session.flush()
