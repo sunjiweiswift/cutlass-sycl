@@ -264,7 +264,7 @@ jobs:
         with:
           LOGS_DIR: ${{ github.workspace }}/outputs/testing
           LOG_FILES_REGEX: "[^_]+_(.*)_benchmarks"
-          ARTIFACT_NAME: cutlass_sycl_${{ matrix.runner }}_benchmarks_${{ matrix.compiler }}_${{ matrix.intel_graphics }}
+          ARTIFACT_NAME: cutlass_sycl_${{ matrix.runner }}_benchmarks${{ matrix.compiler && format('_{0}', matrix.compiler) }}${{ matrix.intel_graphics && format('_{0}', matrix.intel_graphics) }}
           BENCHMARK_TYPE: cutlass
           RUN_INFO: >
             branch=${{ github.event.pull_request.head.ref || github.ref_name }}
@@ -272,8 +272,8 @@ jobs:
             platform=${{ matrix.runner }}
             run_type=sycl
             workflow=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            compiler=${{ matrix.compiler }}
-            driver=${{ matrix.intel_graphics }}
+            compiler=${{ matrix.compiler || 'NOT_SPECIFIED' }}
+            driver=${{ matrix.intel_graphics || 'NOT_SPECIFIED' }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
       - name: Release nvidia ${{ matrix.runner }} resource
