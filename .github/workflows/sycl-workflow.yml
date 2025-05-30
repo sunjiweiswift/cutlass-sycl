@@ -225,7 +225,12 @@ jobs:
       - name: Configure CUTLASS project with SYCL support
         run: |
           mkdir -p build && cd build
-
+          source "$GITHUB_WORKSPACE/.github/scripts/print_message.sh"
+          print_message "CHECK GPU SYCL-LS INFO" blue
+          sycl-ls
+          print_message "CHECK GPU CLINFO OUTPUT" blue
+          clinfo
+          print_message "CONFIGURING CUTLASS" blue
           cmake -G Ninja \
                 -DCMAKE_CUDA_HOST_COMPILER=clang++ \
                 -DCUTLASS_ENABLE_SYCL=ON \
