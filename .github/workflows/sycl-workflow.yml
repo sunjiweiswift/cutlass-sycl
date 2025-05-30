@@ -100,6 +100,7 @@ jobs:
               CMAKE_BUILD_TYPE: Release
               IGC_VISAOptions: -perfmodel
               CUTLASS_SYCL_PROFILING_ENABLED: ON
+              SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
           - runner: BMG
             compiler: NIGHTLY
             intel_graphics: STAGING
@@ -116,6 +117,7 @@ jobs:
               CMAKE_BUILD_TYPE: Release
               IGC_VISAOptions: -perfmodel
               CUTLASS_SYCL_PROFILING_ENABLED: ON
+              SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
           - runner: BMG
             compiler: RELEASE
             intel_graphics: STAGING
@@ -132,6 +134,7 @@ jobs:
               CMAKE_BUILD_TYPE: Release
               IGC_VISAOptions: -perfmodel
               CUTLASS_SYCL_PROFILING_ENABLED: ON
+              SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
           - runner: BMG
             compiler: RELEASE
             intel_graphics: RELEASE
@@ -148,6 +151,7 @@ jobs:
               CMAKE_BUILD_TYPE: Release
               IGC_VISAOptions: -perfmodel
               CUTLASS_SYCL_PROFILING_ENABLED: ON
+              SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
           - runner: BMG
             compiler: NIGHTLY
             intel_graphics: RELEASE
@@ -164,6 +168,7 @@ jobs:
               CMAKE_BUILD_TYPE: Release
               IGC_VISAOptions: -perfmodel
               CUTLASS_SYCL_PROFILING_ENABLED: ON
+              SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
 
     runs-on: ${{ matrix.runner }}
 
