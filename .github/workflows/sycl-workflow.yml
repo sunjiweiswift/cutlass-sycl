@@ -221,6 +221,7 @@ jobs:
           DPCPP_RELEASE: ${{ matrix.compiler }}
           GPU: ${{ matrix.runner }}
           IGC: ${{ matrix.intel_graphics }}
+          GH_TOKEN: ${{ secrets.PAT }}
 
       - name: Configure CUTLASS project with SYCL support
         run: |
