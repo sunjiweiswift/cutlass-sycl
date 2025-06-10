@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
 
       - name: Validation with Super-Linter
-        uses: super-linter/super-linter@v7.3.0
+        uses: super-linter/super-linter@v7.4.0
         env:
           BASH_FILE_NAME: .shellcheckrc
           FILTER_REGEX_INCLUDE: (.github/workflows/(sycl|cuda|xetla)-workflow.yml|.github/workflows/linter.yml|.github/scripts/.*)
