@@ -228,7 +228,7 @@ jobs:
           mkdir -p build && cd build
           source "$GITHUB_WORKSPACE/.github/scripts/print_message.sh"
           print_message "CHECK GPU SYCL-LS INFO" blue
-          sycl-ls
+          sycl-ls || true
           print_message "CHECK GPU CLINFO OUTPUT" blue
           clinfo
           print_message "CONFIGURING CUTLASS" blue
