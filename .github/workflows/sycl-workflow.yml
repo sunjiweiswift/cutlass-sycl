@@ -228,7 +228,9 @@ jobs:
           mkdir -p build && cd build
           source "$GITHUB_WORKSPACE/.github/scripts/print_message.sh"
           print_message "CHECK GPU SYCL-LS INFO" blue
-          sycl-ls || true
+          sycl-ls
+          print_message "CHECK DRIVER VERSION" blue
+          echo "$DRIVER_VERSION"
           print_message "CHECK GPU CLINFO OUTPUT" blue
           clinfo
           print_message "CONFIGURING CUTLASS" blue
@@ -237,7 +239,9 @@ jobs:
                 -DCUTLASS_ENABLE_SYCL=ON \
                 -DDPCPP_SYCL_TARGET=${{ matrix.sycl_target }} \
                 ${{ matrix.cmake_options }} \
-                ..
+                .. 2>&1 | tee cmake_output.log
+          echo "C_COMPILER_VERSION=$(grep 'The C compiler identification is' cmake_output.log | sed 's/-- The C compiler identification is //g; s/ /-/g')" >> "$GITHUB_ENV"
+          echo "CXX_COMPILER_VERSION=$(grep 'The CXX compiler identification is' cmake_output.log | sed 's/-- The CXX compiler identification is //g; s/ /-/g')" >> "$GITHUB_ENV"
 
       - name: Build tests
         uses: ./.github/actions/build_tests
@@ -279,12 +283,15 @@ jobs:
           BENCHMARK_TYPE: cutlass
           RUN_INFO: >
             branch=${{ github.event.pull_request.head.ref || github.ref_name }}
-            sha=$TIMESTAMP_COMMIT
+            sha=${{ env.TIMESTAMP_COMMIT }}
             platform=${{ matrix.runner }}
             run_type=sycl
             workflow=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
             compiler=${{ matrix.compiler || 'NOT_SPECIFIED' }}
             driver=${{ matrix.intel_graphics || 'NOT_SPECIFIED' }}
+            c_compiler_version=${{ env.C_COMPILER_VERSION }}
+            cxx_compiler_version=${{ env.CXX_COMPILER_VERSION }}
+            driver_version=${{ env.DRIVER_VERSION }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
       - name: Release nvidia ${{ matrix.runner }} resource
