@@ -36,8 +36,8 @@ class ComponentSet(CommonBaseModel):
     configuration: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
 
 
-class ComponentsVersion(CommonBaseModel):
-    components_version_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+class ComponentVersions(CommonBaseModel):
+    component_versions_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     configuration: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
 
 
@@ -50,7 +50,7 @@ class Run(CommonBaseModel):
             "data_type_id",
             "workflow",
             "component_set_id",
-            "components_version_id",
+            "component_versions_id",
         ),
     )
 
@@ -61,11 +61,11 @@ class Run(CommonBaseModel):
     data_type_id: Mapped[int] = mapped_column(ForeignKey(DataType.data_type_id))
     workflow: Mapped[str] = mapped_column(String(255), nullable=False)
     component_set_id: Mapped[int] = mapped_column(ForeignKey(ComponentSet.component_set_id))
-    components_version_id: Mapped[int] = mapped_column(ForeignKey(ComponentsVersion.components_version_id))
+    component_versions_id: Mapped[int] = mapped_column(ForeignKey(ComponentVersions.component_versions_id))
 
     run_type: Mapped[RunType] = relationship(RunType)
     reference_rel: Mapped[Reference] = relationship(Reference)
     platform: Mapped[Platform] = relationship(Platform)
     data_type: Mapped[DataType] = relationship(DataType)
     component_set: Mapped[DataType] = relationship(ComponentSet)
-    components_version: Mapped[DataType] = relationship(ComponentsVersion)
+    component_versions: Mapped[DataType] = relationship(ComponentVersions)
