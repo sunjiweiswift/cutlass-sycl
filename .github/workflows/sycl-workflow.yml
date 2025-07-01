@@ -137,7 +137,7 @@ jobs:
               SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
           - runner: BMG
             compiler: RELEASE
-            intel_graphics: RELEASE
+            intel_graphics: ROLLING
             test_kind: benchmarks-codeplay
             sycl_target: intel_gpu_bmg_g21
             cmake_options: -DCUTLASS_ENABLE_BENCHMARKS=ON -DCUTLASS_ENABLE_TESTS=ON -DCUTLASS_SYCL_PROFILING_ENABLED=ON -DCMAKE_BUILD_TYPE=Release
@@ -154,7 +154,7 @@ jobs:
               SYCL_PROGRAM_COMPILE_OPTIONS: -ze-opt-large-register-file -gline-tables-only
           - runner: BMG
             compiler: NIGHTLY
-            intel_graphics: RELEASE
+            intel_graphics: ROLLING
             test_kind: benchmarks-codeplay
             sycl_target: intel_gpu_bmg_g21
             cmake_options: -DCUTLASS_ENABLE_BENCHMARKS=ON -DCUTLASS_ENABLE_TESTS=ON -DCUTLASS_SYCL_PROFILING_ENABLED=ON -DCMAKE_BUILD_TYPE=Release
@@ -214,13 +214,18 @@ jobs:
         with:
           INTEL_ONEAPI_TOOLKIT_DOWNLOAD_URL: ${{ env.INTEL_ONEAPI_TOOLKIT_DOWNLOAD_URL }}
 
-      - name: Install DPCPP and GPU driver
+      - name: Install Intel graphics drivers
+        if: matrix.test_kind == 'benchmarks-codeplay'
+        uses: ./.github/actions/codeplay_install_driver
+        with:
+          GPU: ${{ matrix.runner }}
+          IGC: ${{ matrix.intel_graphics }}
+
+      - name: Install DPC++
         if: matrix.test_kind == 'benchmarks-codeplay'
         uses: ./.github/actions/codeplay_install_dpcpp
         with:
           DPCPP_RELEASE: ${{ matrix.compiler }}
-          GPU: ${{ matrix.runner }}
-          IGC: ${{ matrix.intel_graphics }}
           GH_TOKEN: ${{ secrets.PAT }}
 
       - name: Configure CUTLASS project with SYCL support
