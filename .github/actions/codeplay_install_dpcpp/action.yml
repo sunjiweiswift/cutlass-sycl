@@ -36,9 +36,9 @@ runs:
           URL=https://github.com/intel/llvm/releases/download/${latest}/sycl_linux.tar.gz;
         fi
         echo "Downloading DPCPP from ${URL}"
-        sudo -E wget -q $URL
-        sudo -E tar -xf sycl_linux.tar.gz
-        sudo -E rm sycl_linux.tar.gz
+        sudo wget -q $URL
+        sudo tar -xf sycl_linux.tar.gz
+        sudo rm sycl_linux.tar.gz
         popd
         echo "$PATH" >> "$GITHUB_PATH"
         {
@@ -56,11 +56,11 @@ runs:
       run: |
         export no_proxy="127.0.0.1,localhost"
         wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-        sudo -E apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+        sudo apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
         rm GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-        echo "deb https://apt.repos.intel.com/oneapi all main" | sudo -E tee /etc/apt/sources.list.d/oneAPI.list
-        sudo -E apt update
-        sudo -E apt install -y intel-oneapi-runtime-libs intel-oneapi-compiler-dpcpp-cpp
+        echo "deb https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+        sudo apt update
+        sudo apt install -y intel-oneapi-runtime-libs intel-oneapi-compiler-dpcpp-cpp
         source /opt/intel/oneapi/setvars.sh
         echo "$PATH" >> "$GITHUB_PATH"
         {
