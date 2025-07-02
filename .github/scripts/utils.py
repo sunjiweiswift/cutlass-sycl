@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 CERTS = {
     "SHA256.crt": "http://certificates.intel.com/repository/certificates/IntelSHA256RootCA-Base64.crt",
-    "SHA384.crt": "http://certificates.intel.com/repository/certificates/IntelSHA384RootCA-Base64.crt",
+    "SHA384.crt": "https://certificates.intel.com/repository/certificates/IntelSHA384RootCA-Base64.crt",
 }
 GITHUB_API = "api.github.com"
 GITHUB_API_URL = "https://api.github.com"
