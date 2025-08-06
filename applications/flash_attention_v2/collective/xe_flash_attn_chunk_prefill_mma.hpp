@@ -291,13 +291,6 @@ struct FlashChunkPrefillMma<
                   args.page_size, args.num_pages_per_seq};
   }
 
-  //   template <class FragQccum, class TensorQ, class TensorK, class FragSrc>
-  //   CUTLASS_DEVICE void loadQ(FragQccum &accum, TensorQ gQ, TensorK gK,
-  //                             FragSrc const &frag_src, int const
-  //                             &k_tile_count, Params const &params, bool
-  //                             is_KV_cache) {
-  //                             }
-
   template <class FragQccum, class TensorQ, class TensorK, class FragSrc>
   CUTLASS_DEVICE void mmaQK(FragQccum &accum, TensorQ gQ, TensorK gK,
                             FragSrc const &frag_src, int const &k_tile_count,
@@ -321,13 +314,6 @@ struct FlashChunkPrefillMma<
 
     Tensor tCgQ = thread_mma_q.partition_A(gQ);
     Tensor tCgK = thread_mma_k.partition_B(gK);
-    // Partition
-    // if (thread(0, 0)) {
-    //   print("gQ: \n");
-    //   print(gQ);
-    //   print("tCgQ: \n");
-    //   print(tCgQ);
-    // }
 
     // Create fragments
     // TODO(Codeplay): fix this, this is probably not general
@@ -350,34 +336,8 @@ struct FlashChunkPrefillMma<
 
     for (int k_tile = 0; k_tile < k_tile_count; ++k_tile) {
       copy(params.gmem_tiled_copy_q, tQgQ(_, _, _, k_tile), tQrQ);
-      //   if (thread(0, 0)) {
-      //     print("tCgQ: \n");
-      //     print_tensor(tCgQ);
-      //     print(tCgQ);
-      //     print("tQgQ: \n");
-      //     print_tensor(tQgQ);
-      //     print(tQgQ);
-      //     print("tQrQ: \n");
-      //     print_tensor(tQrQ);
-      //     print(tQrQ);
-      //     print("tQgQ(_, _, _, k_tile) \n");
-      //     print (tQgQ(_, _, _, k_tile));
-      //   }
       copy(gmem_tiled_copy_k, tKgK(_, _, _, k_tile), tKrK);
       cute::gemm(tiled_mma, accum, tCrQ, tCrK, frag_src);
-      if (thread(0, 0)) {
-        // print("tQgQ: \n");
-        // print_tensor(tQgQ);
-        // print("tQrQ: \n");
-        // print_tensor(tQrQ);
-        // print("tCrK: \n");
-        // print_tensor(tCrK);
-        // print("tCrQ: \n");
-
-        // print_tensor(tCrQ);
-        // print("tCgQ: \n");
-        // print_tensor(tCgQ);
-      }
 #if 0
 #define PRINT(x)                                                               \
   print(#x ": ");                                                              \

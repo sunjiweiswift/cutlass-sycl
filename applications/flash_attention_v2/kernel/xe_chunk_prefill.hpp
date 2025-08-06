@@ -274,15 +274,6 @@ public:
     int sub_group_id = thread_idx / SubgroupSize;
 
     TileScheduler tile_scheduler{params.scheduler};
-
-    // int chunk_size = params.mainloop.chunk_size; // 获取 chunk_size
-    // int num_chunks = cute::ceil_div(seq_len_qo, chunk_size);
-
-    // CUTLASS_ASSERT(seq_len_qo == seq_len_kv);
-
-    // for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-    //   int current_chunk_size =
-    //       cute::min((size_t)chunk_size, seq_len_qo - chunk_idx * chunk_size);
     CUTLASS_PRAGMA_NO_UNROLL
     for (; tile_scheduler.is_valid(); ++tile_scheduler) {
       auto blk_coord =
@@ -291,7 +282,6 @@ public:
                                   // batch_blk_idx, num_heads_blk_idx
 
       auto blk_m_coord = get<0>(blk_coord); // seq_len_blk_idx
-      // auto blk_n_coord = get<1>(blk_coord); // head_size_blk_idx
       auto blk_n_coord = 0;                   // nums_head_blk_idx
       auto q_group_coord = get<1>(blk_coord); // kv_heads_idx
 
@@ -308,12 +298,6 @@ public:
       // would have it's own seq_len_qo and seq_len_kv) iff !is_var_len:
       // batch_size = batch * num_heads
       auto blk_l_coord = q_group_coord;
-      // auto blk_l_coord = is_var_len
-      //                        ? q_group_coord //
-      //                        kv_heads_blk_idx(num_q_group_id) in current
-      //                        batch : batch_coord * q_group_nums +
-      //                        q_group_coord;
-      //  : q_group_coord;
 
       // Get problem shape for the current batch_blk_idx. For variable
       // sequence length, it loads the sequence length from Global memory for
@@ -342,16 +326,7 @@ public:
           seq_len_qo * q_group_size) {
         continue;
       }
-      // const int seq_coord =
-      //     cute::min(seq_len_qo, (blk_m_coord * QK_BLK_M +
-      //                            (sub_group_id / PV_ATOM_N) * QK_SG_M) %
-      //                               seq_len_qo);
-      // const int seq_coord =
-      //     cute::min(seq_len_qo, blk_m_coord * QK_BLK_M +
-      //                               (sub_group_id / PV_ATOM_N) * QK_SG_M);
-      // seq_len_kv - cute::min(seq_len_qo, seq_len_kv)  +
-      // cute::min(seq_len_kv, seq_coord - seq_len_qo + offset) +
-      //               QK_SG_M
+
       const int seq_coord =
           (blk_m_coord * QK_BLK_M + (sub_group_id / PV_ATOM_N) * QK_SG_M) %
           seq_len_qo;
@@ -369,29 +344,13 @@ public:
       const int kv_splits_new = cute::ceil_div(seq_len, QK_BLK_N);
       const int kv_splits_cache = cute::ceil_div(seq_len_kv_cache, QK_BLK_N);
       const int kv_splits = kv_splits_cache + kv_splits_new;
-      // if (thread0()) {
-      //   print("kv_splits_new: %d kv_splits_cache: %d kv_splits: %d\n",
-      //         kv_splits_new, kv_splits_cache, kv_splits);
-      //   print("seq_q_len %d seq_kv_len: %d seq_kv_cache_len: %d\n",
-      //   seq_len_qo,
-      //         seq_len_kv, seq_len_kv_cache);
-      //   print("seq_coord: %d blk_m_coord: %d sub_group_id: %d "
-      //           "PV_ATOM_N: %d QK_SG_M: %d\n",
-      //           seq_coord, blk_m_coord, sub_group_id, PV_ATOM_N, QK_SG_M);
-      //   print("seq_len: %d\n", seq_len);
-      //   print("offset %d, discard_seq_coord: %d full_tile_offset: %d\n",
-      //         offset, discard_seq_coord, full_tile_offset);
-      // }
+     
       int tiles_per_page = params.mainloop.page_size / QK_BLK_N;
 
       if (CausalMask && seq_coord < discard_seq_coord) { // 1024 =0
         continue;
       }
 
-      // Tensor mQ_mkl = cute::make_counting_tensor(make_layout(make_shape(
-      //     (seq_len_qo * q_group_size), head_size_qk, q_group_nums),
-      //     make_stride(head_size_qk * q_group_nums, 1, head_size_qk)));
-      //     //(m,k,l)
       Tensor mQ_mkl = cute::get_xe_tensor(
           make_shape(seq_len_qo, head_size_qk, 1)); //(m,k,l)
 
@@ -405,50 +364,19 @@ public:
           make_shape(head_size_vo, seq_len_kv_cache, 1)); // (n_cache,k,l)
 
       Tensor mQ_mk = mQ_mkl(_, _, 0);
-      // Tensor mQ_mk = reshape( mQ_mkl(_, _, 0), make_shape(seq_len_qo *
-      // q_group_size, head_size_qk));
+
       Tensor mK_nk = mK_nkl(_, _, 0); // (n,k)
       Tensor mV_nk = mV_nkl(_, _, 0);
-      // Tensor mK_nk = mK_nkl(_, _, blk_l_coord / q_group_size); // (n,k)
-      // Tensor mV_nk = mV_nkl(_, _, blk_l_coord / q_group_size);
 
       Tensor mK_cache_nk = mK_cache_nkl(_, _, 0); // (n_cache, k)
       Tensor mV_cache_nk = mV_cache_nkl(_, _, 0); // (n_cache, k)
-      // Tensor mK_cache_nk =
-      //     mK_cache_nkl(_, _, blk_l_coord / q_group_size); // (n_cache, k)
-      // Tensor mV_cache_nk =
-      //     mV_cache_nkl(_, _, blk_l_coord / q_group_size); // (n_cache, k)
-
-      // TileShapeQK{}(_,_,_)
-      //  mQ_mk(m,k)
-      //       mQ_mk
-      // ArithTuple(_0,_0,0) o (2,128):(_1@0,_1@1)
-      // 4 64
-      // not 2 128
-      // TileShapeQK (128 , XXX, 64)
 
       using GQATileShapeQK = Shape<Int<get<0>(TileShapeQK{}) / 2>, // M1
                                    Int<get<1>(TileShapeQK{})>,
                                    Int<get<2>(TileShapeQK{}) * 2>>; // K1
 
-      // auto gQ = local_tile(mQ_mk, GQATileShapeQK{}, make_coord(blk_m_coord,
-      // _, _),
-      //                  Step<_1, X, _1>{});
       auto gQ = local_tile(mQ_mk, TileShapeQK{}, make_coord(blk_m_coord, _, _),
                            Step<_1, X, _1>{});
-      // if (thread(0, 0)) {
-      //   print("TileShapeQK \n");
-
-      //   print(TileShapeQK{} );
-      //   print("GQATileShapeQK \n");
-
-      //   print(GQATileShapeQK{} );
-      //   print("mQ_mk \n");
-      //   print(mQ_mk);
-      //   print("gQ: \n");
-      //   print(gQ);
-      // }
-
       auto gK = local_tile(mK_nk, TileShapeQK{}, make_coord(_, _, _),
                            Step<X, _1, _1>{});
 
@@ -556,25 +484,6 @@ public:
         barrier_arrive(barrier_scope);
 
         bool is_KV_cache = split < kv_splits_cache;
-        // int kv_cache_tile_idx = split;
-        // if constexpr (PagedKV) {
-        //   if (is_KV_cache) {
-        //     // get physical page idx from page table
-        //     kv_cache_tile_idx =
-        //         params.mainloop.ptr_page_table
-        //                 [batch_coord *
-        //                      params.mainloop.num_pages_per_seq + // page
-        //                      table
-        //                                                          // for this
-        //                                                          // batch
-        //                  split * QK_BLK_N /
-        //                      params.mainloop.page_size // split (tile idx) to
-        //                                                // logical page idx
-        //     ] * tiles_per_page +        // base block idx of physical page
-        //         split % tiles_per_page; // offset within page
-        //   }
-        // }
-
         // 1) Load KV (performed inside mmaQK)
         auto gK_ = is_KV_cache ? gK_cache(_, _, cached_nblock, _)
                                : gK(_, _, split - kv_splits_cache, _);
@@ -593,14 +502,6 @@ public:
                              ceil_div(head_size_qk, QK_BLK_K), mainloop_params,
                              is_KV_cache);
 
-        // if (thread(0, 0)) {
-        //  print("q_group_coord %d\n", q_group_coord);
-        //  print_tensor(tSr);
-        // }
-        // collective_mma.mmaQK(tSr, gQ, gK_(_, _, split, _), tSr,
-        //                      ceil_div(head_size_qk, QK_BLK_K),
-        //                      mainloop_params, is_KV_cache);
-        // }
         auto &tiled_prefetch_v_ =
             is_KV_cache ? tiled_prefetch_v_cache : tiled_prefetch_v;
         auto &pVgV_ = is_KV_cache ? pVgV_cache : pVgV;
@@ -649,11 +550,6 @@ public:
         // 5) Perform GEMM O = S*V
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr, gV_, out_reg,
                                                mainloop_params, is_KV_cache);
-        // collective_mma.template mmaPV<VSlicer>(out_reg, tSr, gV(_, _,
-        // split),
-        //                                        out_reg, mainloop_params,
-        //                                        is_KV_cache);
-
         // ... prefetch next tile ...
         // Prefetch the next Q tile
         CUTLASS_PRAGMA_UNROLL
@@ -718,13 +614,12 @@ public:
           }
         }
         // if (thread0()) {
-        //   print("FragsM %d  FragsN %d \n",
-        //         FragsM, FragsN);
+        //   print("Vec %dFragsM %d  FragsN %d \n",
+        //         Vec, FragsM, FragsN);
         // }
 
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax((kv_splits - 1) == 0, tSr, max_reg, sum_reg, out_reg);
-
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr,
                                                gV(_, _, kv_splits_new - 1),
                                                out_reg, mainloop_params, false);
@@ -737,8 +632,6 @@ public:
               batch_coord, q_group_coord);
       CollectiveEpilogue epilogue{epilogue_params, shared_storage.epilogue};
       auto blk_coord_mnkl = make_coord(blk_m_coord, blk_n_coord, _, 0);
-      // auto blk_coord_mnkl =
-      //     make_coord(blk_m_coord, blk_n_coord, _, blk_l_coord);
       epilogue(params.problem_shape, sequence_length_shape, blk_coord_mnkl,
                out_reg, max_reg, sum_reg);
     }
