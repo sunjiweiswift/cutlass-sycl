@@ -644,10 +644,6 @@ public:
             }
           }
         }
-        if (thread0()) {
-          print("Vec %dFragsM %d  FragsN %d kv_splits_new %d kv_splits%d\n",
-                Vec, FragsM, FragsN, kv_splits_new, kv_splits);
-        }
 
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax((kv_splits - 1) == 0, tSr, max_reg, sum_reg, out_reg);
