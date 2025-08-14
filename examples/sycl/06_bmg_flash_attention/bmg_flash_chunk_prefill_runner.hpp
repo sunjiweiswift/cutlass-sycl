@@ -59,16 +59,17 @@ struct Options {
   bool help;
   bool error;
   bool is_causal;
+  bool is_local_mask;
   bool varlen = false;
   bool use_paged_kv = false;
   std::string scheduler;
 
-  int batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, seq_len_kv_cache, page_size, head_size_qk, head_size_vo, iterations;
+  int batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, seq_len_kv_cache, page_size, head_size_qk, head_size_vo, iterations, window_left, window_right;
   float softmax_scale;
 
   Options()
-      : help(false), error(false), is_causal(false), varlen(false), use_paged_kv(false), batch(32), num_heads_q(16), num_heads_kv(16), seq_len_qo(512), head_size_qk(128),
-        seq_len_kv(512), seq_len_kv_cache(512), page_size(128), head_size_vo(128), iterations(100), softmax_scale(1.f), scheduler("Individual") {}
+      : help(false), error(false), is_causal(false), is_local_mask(false), varlen(false), use_paged_kv(false), batch(32), num_heads_q(16), num_heads_kv(16), seq_len_qo(512), head_size_qk(128),
+        seq_len_kv(512), seq_len_kv_cache(512), page_size(128), head_size_vo(128), iterations(100), window_left(-1), window_right(-1), softmax_scale(1.f), scheduler("Individual") {}
 
   // Parses the command line
   void parse(int argc, char const **args) {
@@ -97,6 +98,8 @@ struct Options {
     cmd.get_cmd_line_argument("seq_len_kv_cache", seq_len_kv_cache, 512);
     cmd.get_cmd_line_argument("head_size_vo", head_size_vo, HEAD_DIM);
     cmd.get_cmd_line_argument("head_size_qk", head_size_qk, head_size_vo);
+    cmd.get_cmd_line_argument("window_left", window_left, -1);
+    cmd.get_cmd_line_argument("window_right", window_right, -1);
     cmd.get_cmd_line_argument("iterations", iterations, 100);
 
     if (cmd.check_cmd_line_flag("use_paged_kv")) {
@@ -112,7 +115,9 @@ struct Options {
             return;
         }
     }
-
+    if (window_left > -1 && window_right > -1) {
+      is_local_mask = true;
+    }
     softmax_scale = 1 / sqrt(static_cast<float>(head_size_qk));
   }
 
@@ -123,6 +128,8 @@ struct Options {
         << "Options:\n\n"
         << "  --help                      If specified, displays this usage statement\n\n"
         << "  --is_causal                 Apply Causal Mask to the output of first Matmul\n"
+        << "  --window_left=<int>         Set the left borders of the window, If set to -1, calculate all seq_len\n"
+        << "  --window_right=<int>        Set the left borders of the window, If set to -1, calculate all seq_len\n"
         << "  --varlen                    Enable variable sequence length\n"
         << "  --scheduler=\"Value\"       Choose between Individual or Persistent Scheduler\n"
         << "  --batch=<int>               Sets the Batch Size of the Multi-Head Self Attention module\n"
@@ -207,7 +214,10 @@ template <class FMHAChunkPrefillKernel, bool isVarLen> struct ExampleRunner {
   // Methods
   //
 
-bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
+bool verify(ProblemShapeType problem_size, Options options) {
+    bool is_causal = options.is_causal;
+    bool is_local_mask = options.is_local_mask;
+
     std::vector<ElementOutput> host_O(block_ref_O.size());
     if constexpr (isVarLen) {
       int max_seq_len_q = static_cast<int>(get<3>(problem_size));
@@ -248,7 +258,8 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
       int seq_len_kv_total = seq_len_kv_cache + seq_len_kv;
       cutlass::DeviceAllocation<ElementK> block_K_concat(seq_len_kv_total * num_heads_kv * head_size_qk);
       cutlass::DeviceAllocation<ElementV> block_V_concat(seq_len_kv_total * num_heads_kv * head_size_vo);
-      if (use_kv_cache) {
+
+      if (seq_len_kv_cache > 0) { // use_kv_cache
         // Concatenate K_cache and K
         syclcompat::memcpy<ElementK>(
             block_K_concat.get(),
@@ -300,28 +311,29 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
           syclcompat::wait();
           std::vector<ElementAccumulator> host_S(block_S.size());
           syclcompat::memcpy<ElementAccumulator>(host_S.data(), block_S.get(), host_S.size());
-          // for (int i = 0; i < seq_len_qo; i++) {
-          //   for (int j = 0; j < seq_len_kv_total; j++) {
-          //   std::cout << "S[" << i << "," << j << "] = " << host_S[i * seq_len_kv_total + j] << " ";
-          //   }
-          //   std::cout <<std::endl;
-          // }
           
           // delete this memory as it is no longer needed
           block_S.reset();
           auto offset = cute::min(seq_len_qo, seq_len_kv);
           auto discard_seq_coord = seq_len_qo - offset;
           auto full_tile_offset = seq_len_kv - offset;
-          int start_col = use_kv_cache ? seq_len_kv_cache : 0;
-          if (is_causal) {
-            // apply mask to S
-            for (int row = 0; row < seq_len_qo; row++) {
-              for (int col = start_col; col < seq_len_kv_total; col++) {
-                if (col - full_tile_offset > row + start_col - discard_seq_coord)
-                  host_S[col + row * seq_len_kv_total] = ElementAccumulator{-INFINITY};
+          int start_col = seq_len_kv_cache;
+          // apply mask to S
+          for (int row = 0; row < seq_len_qo; row++) {
+            for (int col = 0; col < seq_len_kv_total; col++) {
+              // causal mask
+              if (is_causal && (col - full_tile_offset > row + seq_len_kv_cache - discard_seq_coord)) {
+                host_S[col + row * seq_len_kv_total] = ElementAccumulator{-INFINITY};
+              }
+              // sliding window mask
+              bool left_mask = col < cute::max(0, seq_len_kv_cache + row - options.window_left);
+              bool right_mask = col > cute::min(seq_len_kv_total, seq_len_kv_cache + row + options.window_right);
+              if (is_local_mask && (left_mask || right_mask)) {
+                host_S[col + row * seq_len_kv_total] = ElementAccumulator{-INFINITY};
               }
             }
           }
+
           // compute max element per row of S
           std::vector<ElementAccumulator> max_vec(seq_len_qo, ElementAccumulator{-INFINITY});
           for (int row = 0; row < seq_len_qo; row++) {
@@ -333,13 +345,12 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
                 max_vec[max_idx] = host_S[idx];
             }
           }
-  
           // compute exp of S
           for (int row = 0; row < seq_len_qo; row++) {
             int idx = row * seq_len_kv_total;
             int max_idx = row;
             for (int col = 0; col < seq_len_kv_total; col++, idx++) {
-              host_S[idx] = expf((host_S[idx] - max_vec[max_idx]) / std::sqrt(static_cast<ElementAccumulator>((head_size_qk))));
+              host_S[idx] = expf((host_S[idx] - max_vec[max_idx]) / options.softmax_scale);
             }
           }
   
@@ -356,14 +367,16 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
             idx = row * seq_len_kv_total;
             sum_idx = row;
             for (int col = 0; col < seq_len_kv_total; col++, idx++) {
-              if(is_causal && row < discard_seq_coord) {
+              if (is_causal && row < discard_seq_coord) {
+                host_S[idx] = 0;
+              } else if (is_local_mask && (col < cute::max(0, seq_len_kv_cache + row - options.window_left) 
+                    || col > cute::min(seq_len_kv_total, seq_len_kv_cache + row + options.window_right))) {
                 host_S[idx] = 0;
               } else {
                 host_S[idx] /= sum_vec[sum_idx];
               }
             }
           }
-  
           std::vector<ElementV> host_P(host_S.size());
           for (int p = 0; p < host_P.size(); p++)
             host_P[p] = static_cast<ElementV>(host_S[p]);
@@ -736,7 +749,9 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
         block_V_cache.get(), stride_V_cache,
         options.use_paged_kv ? paged_kv_cache.page_table.get() : nullptr,
         options.use_paged_kv ? paged_kv_cache.page_size : 0,
-        options.use_paged_kv ? paged_kv_cache.num_pages_per_seq.get() : nullptr},
+        options.use_paged_kv ? paged_kv_cache.num_pages_per_seq.get() : nullptr,
+        options.window_left,
+        options.window_right},
         {options.softmax_scale},
         {block_O.get(), stride_O},
         hw_info};
@@ -748,7 +763,7 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
     if (!FMHAChunkPrefillKernel::can_implement(arguments)) {
       std::cout << "Invalid Problem Size: " << options.batch << 'x' << options.num_heads_q << 'x' <<
         options.seq_len_qo << 'x' << options.seq_len_kv << 'x' << options.head_size_qk << 'x'  << options.head_size_vo 
-        << (options.is_causal ? "xCausal" : "xNonCausal") << std::endl;
+        << (options.is_causal ? "xCausal" : "xNonCausal") << (options.is_local_mask ? "xLocalMask" : "xNonLocalMask") << std::endl;
       return cutlass::Status::kErrorInvalidProblem;
     }
 
@@ -764,8 +779,8 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
     syclcompat::wait();
 
     // Verify that the result is correct
-    bool use_kv_cache = options.seq_len_kv_cache > 0;
-    bool passed = verify(problem_size, options.is_causal, use_kv_cache);
+    // bool use_kv_cache = options.seq_len_kv_cache > 0;
+    bool passed = verify(problem_size, options);
     std::cout << "Disposition: " << (passed ? "Passed" : "Failed") << std::endl;
 
     if (!passed) {
@@ -784,7 +799,9 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
       auto discard_seq_coord = options.seq_len_qo - offset;
       auto full_tile_offset = options.seq_len_kv - offset;
       // offset + 1 is going to be ceil_div
-      auto effective_seq_len_kv = options.seq_len_kv_cache + (options.is_causal ? full_tile_offset + ((offset + 1) / 2.0): options.seq_len_kv);
+      auto effective_seq_len_kv = options.seq_len_kv_cache + (options.is_causal ? full_tile_offset + ((offset + 1) / 2.0) : 
+                                                                                  options.is_local_mask ? (options.window_left + options.window_right)
+                                                                                  : options.seq_len_kv);
       auto effective_seq_len_qo = options.is_causal ? options.seq_len_qo - discard_seq_coord : options.seq_len_qo;
       double cute_time = timer.seconds() / options.iterations;
       double flops_qk = 2.0 * options.batch * options.num_heads_q * effective_seq_len_qo * effective_seq_len_kv * options.head_size_qk;
@@ -809,6 +826,7 @@ bool verify(ProblemShapeType problem_size, bool is_causal, bool use_kv_cache) {
 
 // the default value used for the case BF16
 template <bool Causal, 
+          bool LocalMask,
           typename TileShapeQK, 
           typename TileShapePV, 
           typename TileShapeOutput, 
@@ -855,6 +873,7 @@ template <bool Causal,
         GmemTiledCopyK, // K
         GmemTiledCopyV, // V,
         Causal,
+        LocalMask,
         PagedKV>;
 
     using FMHAChunkPrefillKernel = cutlass::flash_attention::kernel::FMHAPrefillChunk<ProblemShapeType, CollectiveMainloop,

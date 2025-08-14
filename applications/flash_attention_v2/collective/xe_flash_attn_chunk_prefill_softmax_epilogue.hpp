@@ -114,8 +114,14 @@ public:
       CUTLASS_PRAGMA_UNROLL
       for (int z = 0; z < FragsN; z++) {
         auto base_indx = indx + (z * Vec * FragsM);
-        Element eq = frag_s(base_indx) - max_scale_bcast;
-        frag_s(base_indx) = sycl::native::exp2(eq);
+        if (std::isinf(max_scale_bcast) && max_scale_bcast < 0) {
+          frag_s(base_indx) = 0.f;
+        } else if (std::isinf(frag_s(base_indx)) && frag_s(base_indx) < 0) {
+          frag_s(base_indx) = 0.f;
+        } else {
+          Element eq = frag_s(base_indx) - max_scale_bcast;
+          frag_s(base_indx) = sycl::native::exp2(eq);
+        }
         sum(indx) += frag_s(base_indx);
       }
     }
@@ -152,18 +158,33 @@ public:
     reduce_max<Vec, FragsM, FragsNAcc>(frag_s, max);
     static_assert(Vec * FragsM  % 8 ==0, " No. of attention rows per subgroup should be >= 1 MMA Atom worth of rows.");
     if (!is_first) {
-      auto g = syclcompat::get_nd_item<1>().get_sub_group();
+      auto sg = syclcompat::get_nd_item<1>().get_sub_group();
       Element max_scale{max * params.scale};
-      Element exp_scale{sycl::native::exp2(max_prev * params.scale - max_scale)};
+      Element exp_scale;
+      if (std::isinf(max_scale) && max_scale < 0) {
+        exp_scale = 0.f;
+      } else if (std::isinf(max_prev) && max_prev < 0) {
+        exp_scale = 0.f;
+      } else {
+        exp_scale = sycl::native::exp2(max_prev * params.scale - max_scale);
+      }
+
       CUTLASS_PRAGMA_UNROLL
       for (int indx = 0; indx < Vec * FragsM; indx++) {
-        auto max_scale_bcast = group_broadcast(g, max_scale, indx);
-        auto exp_scale_bcast = group_broadcast(g, exp_scale, indx);
+        auto max_scale_bcast = group_broadcast(sg, max_scale, indx);
+        auto exp_scale_bcast = group_broadcast(sg, exp_scale, indx);
         sum(indx) *= exp_scale_bcast;
         CUTLASS_PRAGMA_UNROLL
         for (int z = 0; z < FragsNAcc; z++) {
           auto base_indx = indx + (z * Vec * FragsM);
-          frag_s(base_indx) = sycl::native::exp2((frag_s(base_indx) - max_scale_bcast));
+          if (std::isinf(max_scale_bcast) && max_scale_bcast < 0) {
+            frag_s(base_indx) = 0.f;
+          } else if (std::isinf(frag_s(base_indx)) && frag_s(base_indx) < 0) {
+            frag_s(base_indx) = 0.f;
+          } else {
+            Element eq = frag_s(base_indx) - max_scale_bcast;
+            frag_s(base_indx) = sycl::native::exp2(eq);
+          }
           sum(indx) += frag_s(base_indx);  
         }
         CUTLASS_PRAGMA_UNROLL

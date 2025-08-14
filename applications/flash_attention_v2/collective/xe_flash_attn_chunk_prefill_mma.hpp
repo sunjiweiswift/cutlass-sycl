@@ -76,7 +76,7 @@ template <class DispatchPolicy, class ProblemShapeType_, class ElementQ_,
           class StrideV_, class MMAOperation_, class TileShapeQK_,
           class TileShapePV_, class SubgroupLayout_, class GmemTiledCopyQ_,
           class GmemTiledCopyK_, class GmemTiledCopyV_, bool CausalMask_,
-          bool PagedKV_>
+          bool LocalMask_, bool PagedKV_>
 struct FlashChunkPrefillMma {
   static_assert(cutlass::detail::dependent_false<ElementQ_>,
                 "Could not find a mainloop specialization.");
@@ -88,12 +88,12 @@ template <int Stages, class ProblemShapeType_, class ElementQ_, class StrideQ_,
           class ElementK_, class StrideK_, class ElementV_, class StrideV_,
           class MMAOperation_, class TileShapeQK_, class TileShapePV_,
           class SubgroupLayout_, class GmemTiledCopyQ_, class GmemTiledCopyK_,
-          class GmemTiledCopyV_, bool CausalMask_, bool PagedKV_>
+          class GmemTiledCopyV_, bool CausalMask_, bool LocalMask_, bool PagedKV_>
 struct FlashChunkPrefillMma<
     gemm::MainloopIntelXeXMX16<Stages>, ProblemShapeType_, ElementQ_, StrideQ_,
     ElementK_, StrideK_, ElementV_, StrideV_, MMAOperation_, TileShapeQK_,
     TileShapePV_, SubgroupLayout_, GmemTiledCopyQ_, GmemTiledCopyK_,
-    GmemTiledCopyV_, CausalMask_, PagedKV_> {
+    GmemTiledCopyV_, CausalMask_, LocalMask_, PagedKV_> {
   //
   // Type Aliases
   //
@@ -136,6 +136,7 @@ struct FlashChunkPrefillMma<
                                              SubgroupLayout>::TiledMMA;
   using ElementAccumulator = typename TiledMmaQK::ValTypeC;
   static constexpr bool CausalMask = CausalMask_;
+  static constexpr bool LocalMask = LocalMask_;
   static constexpr bool PagedKV = PagedKV_;
 
   static constexpr int SubgroupSize = DispatchPolicy::SubgroupSize;
@@ -223,6 +224,8 @@ struct FlashChunkPrefillMma<
     int const *ptr_page_table;
     int page_size;
     int const *num_pages_per_seq;
+    int window_left;
+    int window_right;
   };
 
   struct Params {
@@ -235,6 +238,8 @@ struct FlashChunkPrefillMma<
     int const *ptr_page_table;
     int page_size;
     int const *num_pages_per_seq;
+    int window_left;
+    int window_right;
   };
 
   //
@@ -285,10 +290,11 @@ struct FlashChunkPrefillMma<
     XE_Copy_K copyK_cache{XE_Copy_K{}.with(tensorK_cache)};
     XE_Copy_V copyV_cache{XE_Copy_V{}.with(tensorV_cache)};
 
-    return Params{copyQ,          copyK,
-                  copyV,          copyK_cache,
-                  copyV_cache,    args.ptr_page_table,
-                  args.page_size, args.num_pages_per_seq};
+    return Params{copyQ,            copyK,
+                  copyV,            copyK_cache,
+                  copyV_cache,      args.ptr_page_table,
+                  args.page_size,   args.num_pages_per_seq,
+                  args.window_left, args.window_right};
   }
 
   template <class FragQccum, class TensorQ, class TensorK, class FragSrc>
@@ -556,7 +562,9 @@ struct FlashChunkPrefillMma<
                   copyV_cache,
                   params.ptr_page_table,
                   params.page_size,
-                  params.num_pages_per_seq};
+                  params.num_pages_per_seq,
+                  params.window_left,
+                  params.window_right};
   }
 };
 

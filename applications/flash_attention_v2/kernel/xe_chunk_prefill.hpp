@@ -119,7 +119,11 @@ public:
   static constexpr int SharedStorageSize = 0;
 
   static constexpr bool CausalMask = CollectiveMainloop::CausalMask;
+  static constexpr bool LocalMask = CollectiveMainloop::LocalMask;
+
+  static_assert(!(CausalMask && LocalMask), "Cannot be both causal and local");
   static constexpr bool PagedKV = CollectiveMainloop::PagedKV;
+
 
   static constexpr int SubgroupSize =
       CollectiveMainloop::SubgroupSize; // sub_group size
@@ -328,8 +332,8 @@ public:
       }
 
       const int seq_coord =
-          (blk_m_coord * QK_BLK_M + (sub_group_id / PV_ATOM_N) * QK_SG_M) %
-          seq_len_qo;
+          cute::min(seq_len_qo, (blk_m_coord * QK_BLK_M + (sub_group_id / PV_ATOM_N) * QK_SG_M) %
+          seq_len_qo);
       auto offset = cute::min(seq_len_qo, seq_len_kv); //(2048, 1024)
       auto discard_seq_coord = seq_len_qo - offset;    // 1024
       auto full_tile_offset = seq_len_kv - offset;     // 0
@@ -344,7 +348,7 @@ public:
       const int kv_splits_new = cute::ceil_div(seq_len, QK_BLK_N);
       const int kv_splits_cache = cute::ceil_div(seq_len_kv_cache, QK_BLK_N);
       const int kv_splits = kv_splits_cache + kv_splits_new;
-     
+
       int tiles_per_page = params.mainloop.page_size / QK_BLK_N;
 
       if (CausalMask && seq_coord < discard_seq_coord) { // 1024 =0
@@ -391,6 +395,7 @@ public:
       auto mainloop_params = CollectiveMainloop::get_updated_copies(
           params.mainloop, params.problem_shape, sequence_length_shape,
           batch_coord, q_group_coord);
+
 
       // we limit the horisontal size to two subgroup, the empirical resutls
       // show that reading the two cacheline side by side in gives better
@@ -479,8 +484,16 @@ public:
       // different for each subgroup due to triangular nature of causal based
       // operation
       static constexpr int barrier_scope = CausalMask ? 3 : 2;
+      int split_start = 0;
+      int split_end = kv_splits;
+      if constexpr (CausalMask) {
+        split_end = split_end - 1;
+      } else if (LocalMask) {
+        split_start = cute::max(0, kv_splits_cache - ceil_div(mainloop_params.window_left, QK_BLK_N)); // skip the first split as it is not needed
+        split_end = cute::min(kv_splits, kv_splits_cache + ceil_div(mainloop_params.window_right, QK_BLK_N)); // skip the last split as it is not needed
+      }
       CUTLASS_PRAGMA_UNROLL
-      for (int split = 0; split < kv_splits - CausalMask; split++) {
+      for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
         barrier_arrive(barrier_scope);
 
         bool is_KV_cache = split < kv_splits_cache;
@@ -491,9 +504,8 @@ public:
                                : gV(_, _, split - kv_splits_cache);
         // 2) Create Tensor S
         Tensor tSr = make_tensor<ElementAccumulator>(
-            Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{});
+            Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{}); 
         clear(tSr);
-
         // 3) Perform GEMM S = Q*K
         // Then modify layout to LayoutQ = ((seq_leq_q, group_head_q),
         // head_size_qk, batch* num_heads_q / group_head_q), which can be merged
@@ -501,6 +513,36 @@ public:
         collective_mma.mmaQK(tSr, gQ, gK_, tSr,
                              ceil_div(head_size_qk, QK_BLK_K), mainloop_params,
                              is_KV_cache);
+
+        if constexpr (LocalMask) {
+          // mask the elements of each tile where j - left > i || j + right < i
+          const int item_id = thread_idx % SubgroupSize;
+          // int col_idx = item_id + (kv_splits_new - 1) * QK_BLK_N;
+          // int col_idx = item_id + kv_splits_cache * QK_BLK_N;
+          int col_idx = item_id;
+          if (split < kv_splits_cache) {
+            col_idx += split * cute::min(QK_BLK_N, seq_len_kv_cache) ;
+          } else {
+            col_idx += seq_len_kv_cache + (split - kv_splits_cache) * cute::min(QK_BLK_N, seq_len_kv);
+          }
+
+          CUTLASS_PRAGMA_UNROLL
+          for (int n = 0; n < FragsN;
+            n++, col_idx += get<1>(MmaAtomShape())) { // 4
+              CUTLASS_PRAGMA_UNROLL
+              for (int m = 0; m < FragsM; m++) { // 2
+                int row_idx = m * Vec + seq_coord;
+                CUTLASS_PRAGMA_UNROLL
+                for (int row = 0; row < Vec; row++) { // 8
+                  bool left_mask = col_idx < cute::max(0, row + row_idx + seq_len_kv_cache - mainloop_params.window_left);
+                  bool right_mask = col_idx > cute::min(seq_len_kv_cache + seq_len_kv, row + row_idx + seq_len_kv_cache + mainloop_params.window_right);
+                  if (left_mask || right_mask) {
+                    tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                  }
+                }
+            }
+          }
+        }
 
         auto &tiled_prefetch_v_ =
             is_KV_cache ? tiled_prefetch_v_cache : tiled_prefetch_v;
@@ -546,7 +588,7 @@ public:
         // 4) Fused softmax
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax(split == 0, tSr, max_reg, sum_reg, out_reg);
-
+   
         // 5) Perform GEMM O = S*V
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr, gV_, out_reg,
                                                mainloop_params, is_KV_cache);
@@ -613,10 +655,10 @@ public:
             }
           }
         }
-        // if (thread0()) {
-        //   print("Vec %dFragsM %d  FragsN %d \n",
-        //         Vec, FragsM, FragsN);
-        // }
+        if (thread0()) {
+          print("Vec %dFragsM %d  FragsN %d kv_splits_new %d kv_splits%d\n",
+                Vec, FragsM, FragsN, kv_splits_new, kv_splits);
+        }
 
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax((kv_splits - 1) == 0, tSr, max_reg, sum_reg, out_reg);
@@ -624,6 +666,7 @@ public:
                                                gV(_, _, kv_splits_new - 1),
                                                out_reg, mainloop_params, false);
       }
+
 
       // Epilogue
       auto epilogue_params =

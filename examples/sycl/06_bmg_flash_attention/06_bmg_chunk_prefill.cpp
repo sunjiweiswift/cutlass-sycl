@@ -106,7 +106,11 @@ int main(int argc, const char **argv) {
   using ShapeOutPut = Shape<_256, _192, _64>;
   using SubgroupLayout = Layout<Shape<_32, _1, _1>, Stride<_1, _1, _1>>; 
 #endif
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOutPut, SubgroupLayout, PipelineStages>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOutPut, SubgroupLayout, PipelineStages>::run(options);
-
+  if (options.is_causal) {
+    FMHAConfig<true, false, ShapeQK, ShapePV, ShapeOutPut, SubgroupLayout, PipelineStages>::run(options);
+  } else if (options.is_local_mask) {
+    FMHAConfig<false, true, ShapeQK, ShapePV, ShapeOutPut, SubgroupLayout, PipelineStages>::run(options);
+  } else {
+    FMHAConfig<false, false, ShapeQK, ShapePV, ShapeOutPut, SubgroupLayout, PipelineStages>::run(options);
+  }
 }
