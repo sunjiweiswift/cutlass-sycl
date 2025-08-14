@@ -45,15 +45,6 @@
 namespace cutlass::flash_attention::collective {
 using namespace cute;
 
-#define XETLA_MARKER(message) [[deprecated(message)]]
-
-template <auto val>
-XETLA_MARKER("Help function to print value")
-inline constexpr void XETLA_PRINT() {}
-
-template <typename type>
-XETLA_MARKER("Help function to print type")
-inline constexpr void XETLA_PRINT() {}
 ////////////////////////////////////////////////////////////
 
 template <typename To_type, typename Engine, typename Layout>
@@ -113,24 +104,9 @@ struct FlashChunkPrefillMma<
   using GmemTiledCopyV = GmemTiledCopyV_;
   using ArchTag = typename DispatchPolicy::ArchTag;
   using MmaAtom = MMA_Atom<MMAOperation_>;
-  //   decltype( XETLA_PRINT<TileShapeQK>()) a; //128, 64, 64
-  //   decltype( XETLA_PRINT<SubgroupLayout>()) b;// 16, 1, 1
-  //   print("TileShapeQK \n");
-  //   print(TileShapeQK);
-  //   print("SubgroupLayout \n");
-  //   print(SubgroupLayout);
 
   using TiledMmaQK = typename TiledMMAHelper<MmaAtom, Layout<TileShapeQK>,
                                              SubgroupLayout>::TiledMMA;
-  // XETLA_PRINT<cute::TiledMMA<cute::MMA_Atom<cute::XE_8x16x16_F32BF16BF16F32_TT>,
-  // cute::Layout<cute::tuple<cute::C<16>, cute::C<1>, cute::C<1>>,
-  // cute::tuple<cute::C<1>, cute::C<1>, cute::C<1>>>,
-  // const cute::tuple<cute::Layout<cute::C<128>>, cute::Layout<cute::C<64>,
-  // cute::C<1>>, cute::Layout<cute::C<64>, cute::C<1>>>>>' is deprecated: Help
-  // function to print type [-Wdeprecated-declarations]
-
-  //                                                using a =  decltype(
-  //                                                XETLA_PRINT<TiledMmaQK>());
 
   using TiledMmaPV = typename TiledMMAHelper<MmaAtom, Layout<TileShapePV>,
                                              SubgroupLayout>::TiledMMA;

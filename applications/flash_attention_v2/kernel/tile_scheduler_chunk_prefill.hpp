@@ -77,30 +77,11 @@ struct XeFlashIndividualTileScheduler {
     int head_size_vo = size<7>(problem_size);
     auto group_heads_q = num_heads_q / num_heads_kv;
 
-    // dim3 grid(size(ceil_div(shape<7>(problem_size), shape<1>(tile_shape))),
-    //           size(ceil_div(shape<3>(problem_size), shape<0>(tile_shape))),
-    //           size(shape<0>(problem_size) * shape<1>(problem_size)));
-
     dim3 grid(size(ceil_div(shape<3>(problem_size) * group_heads_q, shape<0>(tile_shape))),
               size(shape<1>(problem_size) / group_heads_q), size(shape<0>(problem_size)));
-    // print("seq_len_qo, seq_len_kv, seq_len_kv_cache: ");
-    //           print(seq_len_qo);
-    //           print("\n");
-    //           print( seq_len_kv);
-    //           print("\n");
-    //           print(seq_len_kv_cache);
-    //           print("\n");
-    // dim3 grid(1, size(ceil_div(shape<3>(problem_size),
-    // shape<0>(tile_shape))),
-    //           size(shape<0>(problem_size) * shape<1>(problem_size)));
-
-    // dim3 grid(size(ceil_div(shape<7>(problem_size), shape<1>(tile_shape))),
-    //           size(ceil_div(shape<3>(problem_size), shape<0>(tile_shape))),
-    //           size(shape<0>(problem_size) * shape<1>(problem_size)));
     return Params{grid};
   }
 
-  // size( sum(ceil(seq_q  / k_seq_q) *  ceil(seq_kv_len / k_seq_kv_len))),
 
   template <int Num_SGs> static dim3 get_grid_shape(Params const &params) {
     return params.grid;

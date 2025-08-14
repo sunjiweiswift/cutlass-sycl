@@ -38,15 +38,6 @@
 #include "flash_attention_v2/collective/xe_flash_attn_chunk_prefill_mma.hpp"
 namespace cutlass::flash_attention::kernel {
 
-#define XETLA_MARKER(message) [[deprecated(message)]]
-template <auto val>
-XETLA_MARKER("Help function to print value")
-inline constexpr void XETLA_PRINT() {}
-
-template <typename type>
-XETLA_MARKER("Help function to print type")
-inline constexpr void XETLA_PRINT() {}
-
 template <class ProblemShape_, class CollectiveMainloop_,
           class CollectiveSoftmaxEpilogue_, class CollectiveEpilogue_,
           class TileScheduler_ = void>
@@ -290,9 +281,6 @@ public:
       auto q_group_coord = get<1>(blk_coord); // kv_heads_idx
 
       auto batch_coord = get<2>(blk_coord); // batch_blk_idx
-      // auto num_heads_coord = get<3>(blk_coord);
-      // print(batch_coord);
-      // #if CUTLASS_ENABLE_DEBUG_PRINTS
 
       // For variable sequence length case, batch is considered to be 1 (same
       // as group gemm). For fixed sequence length case, the l_coord is the
@@ -484,14 +472,17 @@ public:
       // different for each subgroup due to triangular nature of causal based
       // operation
       static constexpr int barrier_scope = CausalMask ? 3 : 2;
-      int split_start = 0;
-      int split_end = kv_splits;
-      if constexpr (CausalMask) {
-        split_end = split_end - 1;
-      } else if (LocalMask) {
-        split_start = cute::max(0, kv_splits_cache - ceil_div(mainloop_params.window_left, QK_BLK_N)); // skip the first split as it is not needed
-        split_end = cute::min(kv_splits, kv_splits_cache + ceil_div(mainloop_params.window_right, QK_BLK_N)); // skip the last split as it is not needed
-      }
+      // int split_start = 0;
+      // int split_end = kv_splits;
+      // if constexpr (CausalMask) {
+      //   split_end = kv_splits - 1;
+      // } else if (LocalMask) {
+      //   split_start = cute::max(0, kv_splits_cache - ceil_div(mainloop_params.window_left, QK_BLK_N) - 1); // skip the first split as it is not needed
+      //   split_end = cute::min(kv_splits, kv_splits_cache + ceil_div(mainloop_params.window_right, QK_BLK_N) + 1); // skip the last split as it is not needed
+      // }
+      // if (thread0()) {
+      //   print("split_start %d split_end %d\n", split_start, split_end);
+      // }
       CUTLASS_PRAGMA_UNROLL
       for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
         barrier_arrive(barrier_scope);
@@ -517,8 +508,6 @@ public:
         if constexpr (LocalMask) {
           // mask the elements of each tile where j - left > i || j + right < i
           const int item_id = thread_idx % SubgroupSize;
-          // int col_idx = item_id + (kv_splits_new - 1) * QK_BLK_N;
-          // int col_idx = item_id + kv_splits_cache * QK_BLK_N;
           int col_idx = item_id;
           if (split < kv_splits_cache) {
             col_idx += split * cute::min(QK_BLK_N, seq_len_kv_cache) ;
