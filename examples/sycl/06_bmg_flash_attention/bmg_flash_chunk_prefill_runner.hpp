@@ -840,8 +840,8 @@ template <bool Causal,
           typename GmemTiledCopyV = XE_2D_U16x16x32_LD_V,
           typename ElementAccumulator = float,
           typename ElementComputeEpilogue = float,
-          typename ElementOutput = float,
-          typename GmemTiledCopyStore = XE_2D_U32x8x16_ST_N> struct FMHAConfig {
+          typename ElementOutput = bfloat16_t,
+          typename GmemTiledCopyStore = XE_2D_U16x8x16_ST_N> struct FMHAConfig {
 
   template <bool isVarLen, bool PagedKV, class Scheduler>
   static int run(const Options &options) {
