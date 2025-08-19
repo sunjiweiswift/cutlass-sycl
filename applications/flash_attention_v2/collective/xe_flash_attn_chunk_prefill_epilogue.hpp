@@ -42,20 +42,6 @@
 #include "cutlass/detail/layout.hpp"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
-// namespace {
-//   template <typename To_type, typename Engine, typename Layout>
-//   CUTLASS_DEVICE auto convert_type(Tensor<Engine, Layout> const &tensor) {
-//     using namespace cute;
-//     using From_type = typename Engine::value_type;
-//     constexpr int numel = decltype(size(tensor))::value;
-//     cutlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
-//     auto frag =
-//     convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(
-//         tensor.data()));
-//         return make_tensor(make_rmem_ptr<To_type>(&frag), tensor.layout());
-//   }
-// }
-
 namespace cutlass {
 namespace flash_attention {
 namespace collective {
@@ -127,6 +113,16 @@ public:
   //
   // Methods
   //
+  template <typename To_type, typename Engine, typename Layout>
+  CUTLASS_DEVICE auto convert_type(Tensor<Engine, Layout> const &tensor) {
+    using From_type = typename Engine::value_type;
+    constexpr int numel = decltype(size(tensor))::value;
+    cutlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
+    auto frag =
+    convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(
+        tensor.data()));
+        return make_tensor(make_rmem_ptr<To_type>(&frag), tensor.layout());
+  }
 
   template <class ProblemShape>
   static constexpr Params to_underlying_arguments(ProblemShape const &problem_shape, Arguments const &args,
