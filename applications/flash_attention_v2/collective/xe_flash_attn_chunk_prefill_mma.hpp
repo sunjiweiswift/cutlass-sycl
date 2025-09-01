@@ -444,14 +444,14 @@ struct FlashChunkPrefillMma<
                  q_group_coord * head_size_vo;
       offset_k_cache = seq_len_kv_cache == 0
                            ? 0
-                           : num_heads_kv * head_size_qk *
-                                     kv_cached_cumulative_length[l_coord] +
-                                 q_group_coord * head_size_qk;
+                           : PagedKV ? q_group_coord * head_size_qk :
+                                num_heads_kv * head_size_qk * kv_cached_cumulative_length[l_coord] +
+                                q_group_coord * head_size_qk;
       offset_v_cache = seq_len_kv_cache == 0
                            ? 0
-                           : num_heads_kv * head_size_vo *
-                                     kv_cached_cumulative_length[l_coord] +
-                                 q_group_coord * head_size_vo;
+                           : PagedKV ? q_group_coord * head_size_vo :
+                                num_heads_kv * head_size_vo * kv_cached_cumulative_length[l_coord] + 
+                                q_group_coord * head_size_vo;
     } else {
       // int offset_q = num_heads_q/*q_group_nums * q_group_size*/ *
       // head_size_qk * qo_cumulative_length[l_coord];
@@ -473,13 +473,12 @@ struct FlashChunkPrefillMma<
       offset_k_cache =
           seq_len_kv_cache == 0
               ? 0
-              : num_heads_kv * head_size_qk * seq_len_kv_cache * l_coord +
-                    q_group_coord * head_size_qk;
+              : PagedKV ? q_group_coord * head_size_qk :
+              num_heads_kv * head_size_qk * seq_len_kv_cache * l_coord + q_group_coord * head_size_qk;
       offset_v_cache =
           seq_len_kv_cache == 0
-              ? 0
-              : num_heads_kv * head_size_vo * seq_len_kv_cache * l_coord +
-                    q_group_coord * head_size_vo;
+              ? 0 : PagedKV ? q_group_coord * head_size_vo :
+              num_heads_kv * head_size_vo * seq_len_kv_cache * l_coord + q_group_coord * head_size_vo;
     }
 
     auto q_traits =
