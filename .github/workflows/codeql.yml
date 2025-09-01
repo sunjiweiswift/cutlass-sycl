@@ -1,0 +1,81 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ "sycl-develop" ]
+  pull_request:
+    branches: [ "sycl-develop" ]
+  schedule:
+    - cron: '23 5 * * 5'
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      # required for all workflows
+      security-events: write
+      # required to fetch internal or private CodeQL packs
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - language: c-cpp
+          build-mode: manual
+        - language: python
+          build-mode: none
+
+    container:
+      image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29 # v4.1.6
+
+    # Initializes the CodeQL tools for scanning.
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@2e230e8fe0ad3a14a340ad0815ddb96d599d2aff # v3.25.8
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: ${{ matrix.build-mode }}
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        apt update
+        if [[ "${{ matrix.build-mode }}" == "none" ]]; then apt install -y python3 ;
+        else apt install -y python3 cmake curl git jq libstdc++-12-dev ninja-build wget ;
+        fi
+
+    - name: Install dependencies
+      if: matrix.build-mode == 'none'
+      shell: bash
+      run: |
+        apt update && apt install -y python3 cmake curl git jq libstdc++-12-dev ninja-build wget
+
+    # For a specific DPC++ nightly build define the repository variable DPCPP_VERSION
+    # for example using the tag: 'nightly-2024-04-22'
+    - name: Install DPC++
+      if: matrix.build-mode == 'manual'
+      uses: ./.github/actions/install-dpcpp
+    - name: Build
+      if: matrix.build-mode == 'manual'
+      shell: bash
+      run: |
+        . setvars.sh
+        clang++ --version && \
+        cmake -G Ninja  \
+          -DCMAKE_CUDA_HOST_COMPILER=clang++  \
+          -DCUTLASS_ENABLE_SYCL=ON \
+          -DDPCPP_SYCL_TARGET=nvptx64-nvidia-cuda \
+          -DDPCPP_SYCL_ARCH=sm_80 && \
+        cmake --build .
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@2e230e8fe0ad3a14a340ad0815ddb96d599d2aff # v3.25.8
+      with:
+        category: "/language:${{matrix.language}}"

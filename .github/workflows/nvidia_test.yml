@@ -1,0 +1,57 @@
+name: "SYCL Nvidia Test"
+
+on:
+  push:
+    branches: [ "sycl-develop" ]
+  pull_request:
+    branches: [ "sycl-develop" ]
+  merge_group:
+    branches: [ "sycl-develop" ]
+  workflow_dispatch:
+    inputs:
+      DPCPP_VERSION:
+        description: "DPCPP version to use"
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-tests:
+    name: Run tests
+    runs-on: cp-nvidia-gpu
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29 # v4.1.6
+      - name: Install DPC++
+        uses: ./.github/actions/install-dpcpp
+
+      # For a specific DPC++ nightly build define the repository variable DPCPP_VERSION
+      # for example using the tag: 'nightly-2024-04-22'
+      - name: Build
+        shell: bash
+        run: |
+          . setvars.sh
+          clang++ --version
+          cmake -G Ninja  \
+            -DCUTLASS_ENABLE_SYCL=ON \
+            -DDPCPP_SYCL_TARGET=nvptx64-nvidia-cuda \
+            -DDPCPP_SYCL_ARCH=sm_80
+          cmake --build .
+
+      - name: Unit test
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH=~/dpcpp/lib/:$LD_LIBRARY_PATH
+          cmake --build . --target test_unit -j 24
+
+      - name: Examples
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH=~/dpcpp/lib/:$LD_LIBRARY_PATH
+          cmake --build . --target test_examples -j 24
