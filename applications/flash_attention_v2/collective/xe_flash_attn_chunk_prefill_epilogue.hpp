@@ -128,10 +128,8 @@ public:
   static constexpr Params to_underlying_arguments(ProblemShape const &problem_shape, Arguments const &args,
                                                   [[maybe_unused]] void *workspace) {
     auto [batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, seq_len_kv_cache, head_size_qk, head_size_vo] = problem_shape;
-    auto q_group_size = num_heads_q / num_heads_kv;
-    auto q_group_num = num_heads_q / q_group_size;
     auto tensorO = make_tensor(make_gmem_ptr(static_cast<ElementO const*>(args.ptr_O)), 
-                                                  make_layout(make_shape(seq_len_qo * q_group_size , head_size_vo, batch * q_group_num), 
+                                                  make_layout(make_shape(seq_len_qo, num_heads_q * head_size_vo, batch), 
                                                   args.dO));
     XE_Copy_O xe_store_o{XE_Copy_O{}.with(tensorO)};
     return {
@@ -194,9 +192,6 @@ public:
     auto [batch, num_heads_q, num_heads_kv, head_size_vo] = select<0, 1, 2, 7>(problem_shape);
     auto [seq_len_qo] = select<0>(sequence_length_shape);
     // Represent the full output tensor
-    auto q_group_size = num_heads_q / num_heads_kv;
-    auto q_group_nums = num_heads_q / q_group_size;
-    // Tensor mO_mnl = cute::get_xe_tensor(make_shape(seq_len_qo * q_group_size , head_size_vo, (is_var_len ? 1: batch) * q_group_nums));
     Tensor mO_mnl = cute::get_xe_tensor(make_shape(seq_len_qo, head_size_vo, 1));
     
     auto [m_coord, n_coord, k_coord, l_coord] = tile_coord;
@@ -228,22 +223,19 @@ public:
   // For Variable Sequence Length, ProblemShapeType = Shape<int, int, int, VariableSeqlen, VariableSeqlen, VariableSeqlen, int, int>
   template <bool VarLen, class ProblemShapeType, class SequenceLengthShapeType>
   CUTLASS_DEVICE static constexpr Params get_updated_copies(Params const& params, ProblemShapeType const& problem_shape, 
-                                                            SequenceLengthShapeType const& sequence_length_shape, int const& l_coord, int const& q_group_coord) {
+                                                            SequenceLengthShapeType const& sequence_length_shape, int const& l_coord, int const& q_head_coord) {
     auto [num_heads_q, num_heads_kv, head_size_vo] = select<1, 2, 7>(problem_shape);
     auto [seq_len_qo] = select<0>(sequence_length_shape);
-    auto q_group_size = num_heads_q / num_heads_kv;
-    auto q_group_num = num_heads_q / q_group_size;
     int offset_o = 0;
     if constexpr (VarLen) {
       auto qo_cumulative_length = get<3>(problem_shape).cumulative_length;
-      offset_o = num_heads_q * head_size_vo * qo_cumulative_length[l_coord] + q_group_coord * q_group_size * head_size_vo;
+      offset_o = num_heads_q * head_size_vo * qo_cumulative_length[l_coord] + q_head_coord * head_size_vo;
     } else {
-      offset_o = num_heads_q * head_size_vo * seq_len_qo * l_coord + q_group_coord * q_group_size * head_size_vo;
+      offset_o = num_heads_q * head_size_vo * seq_len_qo * l_coord + q_head_coord * head_size_vo;
     }
     auto store_traits = static_cast<traits_store_O const&>(params.xe_store_o);
     ElementO* base_ptr = (ElementO*)store_traits.base_ptr;
-    // auto shape_o = make_shape(static_cast<int>(seq_len_qo * q_group_size), head_size_vo, q_group_num);
-    auto shape_o = make_shape(static_cast<int>(seq_len_qo), q_group_num * q_group_size * head_size_vo, 1);
+    auto shape_o = make_shape(static_cast<int>(seq_len_qo), num_heads_q * head_size_vo, 1);
     StrideO stride_o = cutlass::make_cute_packed_stride(StrideO{}, shape_o);
     auto tensorO = make_tensor(make_gmem_ptr(base_ptr + offset_o), make_layout(shape_o, stride_o));
     XE_Copy_O xe_store_o{XE_Copy_O{}.with(tensorO)};

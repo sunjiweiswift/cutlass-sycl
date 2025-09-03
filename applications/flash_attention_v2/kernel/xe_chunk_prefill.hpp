@@ -247,8 +247,6 @@ public:
     auto batch = get<0>(params.problem_shape);
     auto num_heads_q = get<1>(params.problem_shape);
     auto num_heads_kv = get<2>(params.problem_shape);
-    auto q_group_size = num_heads_q / num_heads_kv;
-    auto q_group_nums = num_heads_q / q_group_size;
 
     // auto &seq_len_qo = get<3>(params.problem_shape); // seq_len_qo
 
@@ -278,7 +276,7 @@ public:
 
       auto blk_m_coord = get<0>(blk_coord); // seq_len_blk_idx
       auto blk_n_coord = 0;                   // nums_head_blk_idx
-      auto q_group_coord = get<1>(blk_coord); // kv_heads_idx
+      auto q_head_coord = get<1>(blk_coord); // q_heads_idx
 
       auto batch_coord = get<2>(blk_coord); // batch_blk_idx
 
@@ -289,7 +287,7 @@ public:
       // batch_size. iff is_var_len: batch_size = num_heads (as each batch
       // would have it's own seq_len_qo and seq_len_kv) iff !is_var_len:
       // batch_size = batch * num_heads
-      auto blk_l_coord = q_group_coord;
+      // auto blk_l_coord = q_head_coord;
 
       // Get problem shape for the current batch_blk_idx. For variable
       // sequence length, it loads the sequence length from Global memory for
@@ -315,7 +313,7 @@ public:
       // and check if it is still within bounds of the actual seq_len_qo
       // (get<0>(sequence_length_shape)).
       if (blk_m_coord * get<0>(TileShapeOutput{}) >=
-          seq_len_qo * q_group_size) {
+          seq_len_qo) {
         continue;
       }
 
@@ -363,10 +361,6 @@ public:
       Tensor mK_cache_nk = mK_cache_nkl(_, _, 0); // (n_cache, k)
       Tensor mV_cache_nk = mV_cache_nkl(_, _, 0); // (n_cache, k)
 
-      using GQATileShapeQK = Shape<Int<get<0>(TileShapeQK{}) / 2>, // M1
-                                   Int<get<1>(TileShapeQK{})>,
-                                   Int<get<2>(TileShapeQK{}) * 2>>; // K1
-
       auto gQ = local_tile(mQ_mk, TileShapeQK{}, make_coord(blk_m_coord, _, _),
                            Step<_1, X, _1>{});
       auto gK = local_tile(mK_nk, TileShapeQK{}, make_coord(_, _, _),
@@ -382,7 +376,7 @@ public:
 
       auto mainloop_params = CollectiveMainloop::get_updated_copies(
           params.mainloop, params.problem_shape, sequence_length_shape,
-          batch_coord, q_group_coord);
+          batch_coord, q_head_coord);
 
 
       // we limit the horisontal size to two subgroup, the empirical resutls
@@ -419,7 +413,7 @@ public:
       auto pVgV_cache = thr_prefetch_V.partition_S(gV_cache);
       CUTLASS_PRAGMA_UNROLL
       for (int i = 0; i < size<3>(pQgQ); i++) {
-        prefetch(tiled_prefetch_q, pQgQ(_, _, _, i));
+        // prefetch(tiled_prefetch_q, pQgQ(_, _, _, i));
       }
       auto &prefetch_K =
           (seq_len_kv_cache == 0) ? tiled_prefetch_k : tiled_prefetch_k_cache;
@@ -574,7 +568,7 @@ public:
           }
         }
 
-        // 4) Fused softmax
+        // // 4) Fused softmax
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax(split == 0, tSr, max_reg, sum_reg, out_reg);
    
@@ -657,7 +651,7 @@ public:
       auto epilogue_params =
           CollectiveEpilogue::template get_updated_copies<is_var_len>(
               params.epilogue, params.problem_shape, sequence_length_shape,
-              batch_coord, q_group_coord);
+              batch_coord, q_head_coord);
       CollectiveEpilogue epilogue{epilogue_params, shared_storage.epilogue};
       auto blk_coord_mnkl = make_coord(blk_m_coord, blk_n_coord, _, 0);
       epilogue(params.problem_shape, sequence_length_shape, blk_coord_mnkl,

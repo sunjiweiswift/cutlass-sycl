@@ -543,43 +543,14 @@ bool verify(ProblemShapeType problem_size, Options options) {
     }
 
     auto [batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, seq_len_kv_cache, head_size_qk, head_size_vo] = problem_size;
-    auto group_q_size = num_heads_q / num_heads_kv;;
-    auto group_q_num = num_heads_q / group_q_size;
 
-    // stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, cute::make_shape(seq_len_qo * group_q_size, head_size_qk, batch * group_q_num));
     stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, cute::make_shape(seq_len_qo, num_heads_q * head_size_qk, batch));
     stride_K = cutlass::make_cute_packed_stride(StrideK{}, cute::make_shape(seq_len_kv, num_heads_kv * head_size_qk, batch));
-    
-    // seq_len_k(k) head_nums head_size(n)
-//     template <>
-// struct TagToStrideB<layout::RowMajor> {
-//   using type = cute::Stride<cute::Int<1>, int64_t, int64_t>;
-//   using tag = layout::RowMajor;
-// };
-// template <class IntT>
-// CUTLASS_HOST_DEVICE
-// cute::Stride<cute::Int<1>, IntT, int64_t>
-// make_cute_packed_stride(cute::Stride<cute::Int<1>, IntT, int64_t> s, cute::Shape<int,int,int> shape_MKL) {
-//   static_assert(std::is_integral_v<IntT>,
-//     "Stride must have an integral type so it can be set dynamically. Static strides not supported.");
-//   auto s_copy = s;
-//   cute::get<1>(s_copy) = static_cast<IntT>(cute::get<0>(shape_MKL));
-//   int batch_count =  cute::get<2>(shape_MKL);
-//   if (batch_count > 1) {
-//     cute::get<2>(s_copy) = static_cast<IntT>(cute::get<0>(shape_MKL) * cute::get<1>(shape_MKL));
-//   }
-//   else {
-//     cute::get<2>(s_copy) = static_cast<IntT>(0);
-//   }
-//   return s_copy;
-// }
-    // stride_V = cutlass::make_cute_packed_stride(StrideV{}, cute::make_shape(head_size_vo, seq_len_kv, batch * num_heads_kv));
     stride_V = cutlass::make_cute_packed_stride(StrideV{}, cute::make_shape(head_size_vo * num_heads_kv, seq_len_kv, batch));
 
     stride_K_cache = cutlass::make_cute_packed_stride(StrideK{}, cute::make_shape(seq_len_kv_cache, num_heads_kv * head_size_qk, batch));
-    stride_V_cache = cutlass::make_cute_packed_stride(StrideV{}, cute::make_shape(head_size_vo, seq_len_kv_cache, batch * num_heads_kv));
-    // stride_O = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo * group_q_size, head_size_vo, batch * group_q_num));
-    stride_O = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo * group_q_size, group_q_num * head_size_vo, batch));
+    stride_V_cache = cutlass::make_cute_packed_stride(StrideV{}, cute::make_shape(head_size_vo * num_heads_kv, seq_len_kv_cache, batch));
+    stride_O = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, num_heads_q * head_size_vo, batch));
 
     block_Q.reset(batch * num_heads_q * seq_len_qo * head_size_qk);
     block_K.reset(batch * num_heads_kv * seq_len_kv * head_size_qk);
