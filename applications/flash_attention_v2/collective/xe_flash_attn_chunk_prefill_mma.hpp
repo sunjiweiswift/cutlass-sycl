@@ -223,6 +223,7 @@ struct FlashChunkPrefillMma<
 
     auto [batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv,
           seq_len_kv_cache, head_size_qk, head_size_vo] = problem_shape;
+
     auto tensorQ = make_tensor(
         make_gmem_ptr(args.ptr_Q),
         make_layout(make_shape(seq_len_qo, num_heads_q * head_size_qk, batch),
@@ -416,13 +417,14 @@ struct FlashChunkPrefillMma<
   get_updated_copies(Params const &params, ProblemShape const &problem_shape,
                      SequenceLengthShape const &sequence_length_shape,
                      int const &l_coord, int const &q_head_coord = 0) {
-    auto [num_heads_q, num_heads_kv, head_size_qk, head_size_vo] =
-        select<1, 2, 6, 7>(problem_shape);
+    auto [batch, num_heads_q, num_heads_kv, head_size_qk, head_size_vo] =
+        select<0, 1, 2, 6, 7>(problem_shape);
     auto [seq_len_qo, seq_len_kv, seq_len_kv_cache] = sequence_length_shape;
     auto q_group_size = num_heads_q / num_heads_kv;
     auto kv_head_coord = q_head_coord / q_group_size;
     int offset_q = 0, offset_k = 0, offset_v = 0, offset_k_cache = 0,
         offset_v_cache = 0;
+    int total_seq_len_kv_cache = 0;
     if constexpr (is_var_len) {
       auto qo_cumulative_length = get<3>(problem_shape).cumulative_length;
       auto kv_cumulative_length = get<4>(problem_shape).cumulative_length;
@@ -438,12 +440,15 @@ struct FlashChunkPrefillMma<
                  kv_head_coord * head_size_vo;
       offset_k_cache = seq_len_kv_cache == 0
                            ? 0
-                           : num_heads_kv * head_size_qk * kv_cached_cumulative_length[l_coord] +
-                                kv_head_coord * head_size_qk;
+                           : PagedKV?
+                            kv_head_coord * head_size_qk
+                            : num_heads_kv * head_size_qk * kv_cached_cumulative_length[l_coord] + kv_head_coord * head_size_qk;
       offset_v_cache = seq_len_kv_cache == 0
                            ? 0
-                           : num_heads_kv * head_size_vo * kv_cached_cumulative_length[l_coord] + 
-                                kv_head_coord * head_size_vo;
+                           : PagedKV?
+                           kv_head_coord * head_size_vo
+                           : num_heads_kv * head_size_vo * kv_cached_cumulative_length[l_coord] + kv_head_coord * head_size_vo;
+      total_seq_len_kv_cache = get<5>(problem_shape).total_length;
     } else {
       offset_q = num_heads_q * head_size_qk * seq_len_qo * l_coord +
                  q_head_coord * head_size_qk;
@@ -454,11 +459,17 @@ struct FlashChunkPrefillMma<
                  kv_head_coord * head_size_vo;
       offset_k_cache =
           seq_len_kv_cache == 0
-              ? 0
-              : num_heads_kv * head_size_qk * seq_len_kv_cache * l_coord + kv_head_coord * head_size_qk;
+              ? 0 :
+              PagedKV?
+                kv_head_coord * head_size_qk
+                : num_heads_kv * head_size_qk * seq_len_kv_cache * l_coord + kv_head_coord * head_size_qk;
       offset_v_cache =
           seq_len_kv_cache == 0
-              ? 0 : num_heads_kv * head_size_vo * seq_len_kv_cache * l_coord + kv_head_coord * head_size_vo;
+              ? 0 : 
+              PagedKV?
+               kv_head_coord * head_size_vo
+               : num_heads_kv * head_size_vo * seq_len_kv_cache * l_coord + kv_head_coord * head_size_vo;
+      total_seq_len_kv_cache = batch * seq_len_kv_cache;
     }
 
     auto q_traits =
@@ -485,15 +496,14 @@ struct FlashChunkPrefillMma<
 
     auto shape_v = make_shape(head_size_vo * num_heads_kv,
                               static_cast<int>(seq_len_kv), 1);
-    // auto shape_v =
-    //     make_shape(head_size_vo, static_cast<int>(seq_len_kv), num_heads_kv);
     StrideV stride_v = cutlass::make_cute_packed_stride(StrideV{}, shape_v);
-    auto shape_k_cache = make_shape(static_cast<int>(seq_len_kv_cache),
+
+    auto shape_k_cache = make_shape(static_cast<int>(PagedKV? total_seq_len_kv_cache : seq_len_kv_cache),
                                     head_size_qk * num_heads_kv, 1);
     StrideK stride_k_cache =
         cutlass::make_cute_packed_stride(StrideK{}, shape_k_cache);
     auto shape_v_cache = make_shape(head_size_vo * num_heads_kv,
-                                    static_cast<int>(seq_len_kv_cache), 1);
+                                    static_cast<int>(PagedKV? total_seq_len_kv_cache : seq_len_kv_cache), 1);
     StrideV stride_v_cache =
         cutlass::make_cute_packed_stride(StrideV{}, shape_v_cache);
     auto tensorQ = make_tensor(make_gmem_ptr(q_ptr + offset_q),

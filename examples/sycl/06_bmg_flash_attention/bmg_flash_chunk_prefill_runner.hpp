@@ -215,17 +215,14 @@ template <class FMHAChunkPrefillKernel, bool isVarLen> struct ExampleRunner {
   //
 
 bool verify(ProblemShapeType problem_size, Options options) {
-    bool is_causal = options.is_causal;
-    bool is_local_mask = options.is_local_mask;
-
     std::vector<ElementOutput> host_O(block_ref_O.size());
     if constexpr (isVarLen) {
       int max_seq_len_q = static_cast<int>(get<3>(problem_size));
       int max_seq_len_kv = static_cast<int>(get<4>(problem_size));
       int max_seq_len_kv_cache = static_cast<int>(get<5>(problem_size));
-      get<3>(problem_size) = cutlass::fmha::collective::VariableLength{max_seq_len_q, cumulative_seqlen_q.data()};
-      get<4>(problem_size) = cutlass::fmha::collective::VariableLength{max_seq_len_kv, cumulative_seqlen_kv.data()};
-      get<5>(problem_size) = cutlass::fmha::collective::VariableLength{max_seq_len_kv_cache, cumulative_seqlen_kv_cache.data()};
+      get<3>(problem_size) = cutlass::fmha::collective::VariableLength{max_seq_len_q, 0, cumulative_seqlen_q.data()};
+      get<4>(problem_size) = cutlass::fmha::collective::VariableLength{max_seq_len_kv, 0, cumulative_seqlen_kv.data()};
+      get<5>(problem_size) = cutlass::fmha::collective::VariableLength{max_seq_len_kv_cache, 0, cumulative_seqlen_kv_cache.data()};
     }
 
     auto [batch, num_heads_q, num_heads_kv, head_size_qk, head_size_vo] = cute::select<0,1,2,6,7>(problem_size);
@@ -239,7 +236,7 @@ bool verify(ProblemShapeType problem_size, Options options) {
     int offset_o = 0;
     // loop over the batch dimension to compute the output
     // to avoid the risk of running out of device memory
-    int q_group_size = num_heads_q/num_heads_kv;
+    int q_group_size = num_heads_q / num_heads_kv;
     for (int b = 0; b < batch; b++) {
       if constexpr (isVarLen) {
         auto logical_problem_shape = cutlass::fmha::collective::apply_variable_length(problem_size, b);
@@ -256,34 +253,78 @@ bool verify(ProblemShapeType problem_size, Options options) {
       ElementV* v_ptr;
       q_ptr = block_Q.get() + offset_q;
       int seq_len_kv_total = seq_len_kv_cache + seq_len_kv;
-      cutlass::DeviceAllocation<ElementK> block_K_concat(seq_len_kv_total * num_heads_kv * head_size_qk);
-      cutlass::DeviceAllocation<ElementV> block_V_concat(seq_len_kv_total * num_heads_kv * head_size_vo);
+      cutlass::DeviceAllocation<ElementK> block_K_concat;
+      cutlass::DeviceAllocation<ElementV> block_V_concat;
 
       if (seq_len_kv_cache > 0) { // use_kv_cache
-        // Concatenate K_cache and K
-        syclcompat::memcpy<ElementK>(
+        if (options.use_paged_kv) {
+          int num_pages = paged_kv_cache.page_table.size();
+          std::vector<int> host_page_table(paged_kv_cache.page_table.size());
+          std::vector<int> host_num_pages_per_seq(paged_kv_cache.num_pages_per_seq.size());
+          syclcompat::memcpy<int>(host_page_table.data(), paged_kv_cache.page_table.get(), paged_kv_cache.page_table.size());
+          syclcompat::memcpy<int>(host_num_pages_per_seq.data(), paged_kv_cache.num_pages_per_seq.get(), paged_kv_cache.num_pages_per_seq.size());
+        
+          int curr_batch_pages = isVarLen ? host_num_pages_per_seq[b + 1] - host_num_pages_per_seq[b] : ceil_div(seq_len_kv_cache, paged_kv_cache.page_size);
+          int batch_offset = isVarLen ? host_num_pages_per_seq[b] : b * curr_batch_pages;
+          block_K_concat.reset((seq_len_kv + curr_batch_pages * paged_kv_cache.page_size) * num_heads_kv * head_size_qk);
+          block_V_concat.reset((seq_len_kv + curr_batch_pages * paged_kv_cache.page_size) * num_heads_kv * head_size_vo);
+          
+          for (int p = 0; p < curr_batch_pages; p++) {
+            int page_idx = host_page_table[batch_offset + p];
+            // copy the page from KV cache to the concatenated buffer
+            syclcompat::memcpy<ElementK>(
+              block_K_concat.get() + p * paged_kv_cache.page_size * num_heads_kv * head_size_qk,
+              block_K_cache.get() + page_idx * paged_kv_cache.page_size * num_heads_kv * head_size_qk,
+              paged_kv_cache.page_size * num_heads_kv * head_size_qk
+            );
+            syclcompat::memcpy<ElementV>(
+              block_V_concat.get() + p * paged_kv_cache.page_size * num_heads_kv * head_size_vo,
+              block_V_cache.get() + page_idx * paged_kv_cache.page_size * num_heads_kv * head_size_vo,
+              paged_kv_cache.page_size * num_heads_kv * head_size_vo
+            );
+          }
+          if (seq_len_kv > 0) {
+            syclcompat::memcpy<ElementK>(
+              block_K_concat.get() + curr_batch_pages * paged_kv_cache.page_size * num_heads_kv *head_size_qk,
+              block_K.get() + offset_k,
+              seq_len_kv * num_heads_kv * head_size_qk
+            );
+            syclcompat::memcpy<ElementV>(
+              block_V_concat.get() + curr_batch_pages * paged_kv_cache.page_size * num_heads_kv *head_size_vo,
+              block_V.get() + offset_v,
+              seq_len_kv * num_heads_kv * head_size_vo
+            );
+          }
+          syclcompat::wait();
+        } else {
+          block_K_concat.reset(seq_len_kv_total * num_heads_kv * head_size_qk);
+          block_V_concat.reset(seq_len_kv_total * num_heads_kv * head_size_vo);
+          // Concatenate K_cache and K
+          syclcompat::memcpy<ElementK>(
             block_K_concat.get(),
             block_K_cache.get() + offset_k_cache,
             seq_len_kv_cache * num_heads_kv * head_size_qk
-        );
-        syclcompat::memcpy<ElementK>(
+          );
+          syclcompat::memcpy<ElementK>(
             block_K_concat.get() + seq_len_kv_cache * num_heads_kv * head_size_qk,
             block_K.get() + offset_k,
             seq_len_kv * num_heads_kv * head_size_qk
-        );
-        // Concatenate V_cache and V
-        syclcompat::memcpy<ElementV>(
-            block_V_concat.get(),
-            block_V_cache.get() + offset_v_cache,
-            seq_len_kv_cache * num_heads_kv * head_size_vo
-        );
-        syclcompat::memcpy<ElementV>(
+          );
+          // Concatenate V_cache and V
+          syclcompat::memcpy<ElementV>(
+              block_V_concat.get(),
+              block_V_cache.get() + offset_v_cache,
+              seq_len_kv_cache * num_heads_kv * head_size_vo
+            );
+          syclcompat::memcpy<ElementV>(
             block_V_concat.get() + seq_len_kv_cache * num_heads_kv * head_size_vo,
             block_V.get() + offset_v,
             seq_len_kv * num_heads_kv * head_size_vo
           );
-        k_ptr = block_K_concat.get();
-        v_ptr = block_V_concat.get();
+          // syclcompat::wait();
+        }
+      k_ptr = block_K_concat.get();
+      v_ptr = block_V_concat.get();
       } else {
         k_ptr = block_K.get() + offset_k;
         v_ptr = block_V.get() + offset_v;
@@ -322,13 +363,13 @@ bool verify(ProblemShapeType problem_size, Options options) {
           for (int row = 0; row < seq_len_qo; row++) {
             for (int col = 0; col < seq_len_kv_total; col++) {
               // causal mask
-              if (is_causal && (col - full_tile_offset > row + seq_len_kv_cache - discard_seq_coord)) {
+              if (options.is_causal && (col - full_tile_offset > row + seq_len_kv_cache - discard_seq_coord)) {
                 host_S[col + row * seq_len_kv_total] = ElementAccumulator{-INFINITY};
               }
               // sliding window mask
               bool left_mask = col < cute::max(0, seq_len_kv_cache + row - options.window_left);
               bool right_mask = col > cute::min(seq_len_kv_total, seq_len_kv_cache + row + options.window_right);
-              if (is_local_mask && (left_mask || right_mask)) {
+              if (options.is_local_mask && (left_mask || right_mask)) {
                 host_S[col + row * seq_len_kv_total] = ElementAccumulator{-INFINITY};
               }
             }
@@ -367,9 +408,9 @@ bool verify(ProblemShapeType problem_size, Options options) {
             idx = row * seq_len_kv_total;
             sum_idx = row;
             for (int col = 0; col < seq_len_kv_total; col++, idx++) {
-              if (is_causal && row < discard_seq_coord) {
+              if (options.is_causal && row < discard_seq_coord) {
                 host_S[idx] = 0;
-              } else if (is_local_mask && (col < cute::max(0, seq_len_kv_cache + row - options.window_left) 
+              } else if (options.is_local_mask && (col < cute::max(0, seq_len_kv_cache + row - options.window_left) 
                     || col > cute::min(seq_len_kv_total, seq_len_kv_cache + row + options.window_right))) {
                 host_S[idx] = 0;
               } else {
@@ -511,9 +552,9 @@ bool verify(ProblemShapeType problem_size, Options options) {
 
     ProblemShapeType problem_size_for_launch;
 
-    get<3>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_q};
-    get<4>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_kv};
-    get<5>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_kv_cache};
+    get<3>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_q, total_seqlen_q};
+    get<4>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_kv, total_seqlen_kv};
+    get<5>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_kv_cache, total_seqlen_kv_cache};
     get<6>(problem_size_for_launch) = get<6>(problem_size);
     get<7>(problem_size_for_launch) = get<7>(problem_size);
     get<0>(problem_size_for_launch) = get<0>(problem_size);
@@ -555,8 +596,10 @@ bool verify(ProblemShapeType problem_size, Options options) {
     block_Q.reset(batch * num_heads_q * seq_len_qo * head_size_qk);
     block_K.reset(batch * num_heads_kv * seq_len_kv * head_size_qk);
     block_V.reset(batch * num_heads_kv * seq_len_kv * head_size_vo);
-    block_K_cache.reset(batch * num_heads_kv * seq_len_kv_cache * head_size_qk);
-    block_V_cache.reset(batch * num_heads_kv * seq_len_kv_cache * head_size_vo);
+    if (!options.use_paged_kv) {
+      block_K_cache.reset(batch * num_heads_kv * seq_len_kv_cache * head_size_qk);
+      block_V_cache.reset(batch * num_heads_kv * seq_len_kv_cache * head_size_vo);
+    }
     block_O.reset(batch * num_heads_q * seq_len_qo * head_size_vo);
     block_ref_O.reset(batch * num_heads_q * seq_len_qo * head_size_vo);
 
@@ -571,6 +614,7 @@ bool verify(ProblemShapeType problem_size, Options options) {
         num_pages += pages_per_seq;
       }
       paged_kv_cache.page_table.reset(num_pages);
+
 
       // initialize block table with random mapping for non-contiguous layout
       std::vector<int> page_mapping(num_pages);
@@ -588,6 +632,17 @@ bool verify(ProblemShapeType problem_size, Options options) {
 
       paged_kv_cache.num_pages_per_seq.reset(num_pages_per_seq.size());
       syclcompat::memcpy(paged_kv_cache.num_pages_per_seq.get(), num_pages_per_seq.data(), num_pages_per_seq.size() * sizeof(int));
+
+      std::cout << "num_pages " << num_pages << std::endl;
+      for (int i = 0; i < num_pages_per_seq.size(); i++)
+        std::cout << "num_pages_per_seq[" << i << "] = " << num_pages_per_seq[i] << " ";
+      std::cout << std::endl;
+
+      for (int i = 0; i < num_pages; i++)
+        std::cout << "page_table[" << i << "] = " << page_mapping[i] << " ";
+      std::cout << std::endl;
+      block_K_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_qk);
+      block_V_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_vo);
     }
 
    
@@ -665,9 +720,18 @@ bool verify(ProblemShapeType problem_size, Options options) {
     }
 
     if constexpr (isVarLen) {
+      get<3>(problem_shape).max_length = get<3>(problem_shape).max_length;
+      get<3>(problem_shape).total_length = get<3>(problem_shape).total_length;
       get<3>(problem_shape).cumulative_length = device_cumulative_seqlen_q.get();
-      get<4>(problem_shape).cumulative_length = device_cumulative_seqlen_kv.get();
+
+      get<5>(problem_shape).max_length = get<5>(problem_shape).max_length;
+      get<5>(problem_shape).total_length = get<5>(problem_shape).total_length;
       get<5>(problem_shape).cumulative_length = device_cumulative_seqlen_kv_cache.get();
+      
+      get<4>(problem_shape).max_length = get<4>(problem_shape).max_length;
+      get<4>(problem_shape).total_length = get<4>(problem_shape).total_length;
+      get<4>(problem_shape).cumulative_length = device_cumulative_seqlen_kv.get();
+      
     }
 
     return problem_shape;
@@ -750,7 +814,6 @@ bool verify(ProblemShapeType problem_size, Options options) {
     syclcompat::wait();
 
     // Verify that the result is correct
-    // bool use_kv_cache = options.seq_len_kv_cache > 0;
     bool passed = verify(problem_size, options);
     std::cout << "Disposition: " << (passed ? "Passed" : "Failed") << std::endl;
 
