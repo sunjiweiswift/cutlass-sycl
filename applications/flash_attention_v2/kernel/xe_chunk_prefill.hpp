@@ -413,7 +413,7 @@ public:
       auto pVgV_cache = thr_prefetch_V.partition_S(gV_cache);
       CUTLASS_PRAGMA_UNROLL
       for (int i = 0; i < size<3>(pQgQ); i++) {
-        // prefetch(tiled_prefetch_q, pQgQ(_, _, _, i));
+        prefetch(tiled_prefetch_q, pQgQ(_, _, _, i));
       }
       auto &prefetch_K =
           (seq_len_kv_cache == 0) ? tiled_prefetch_k : tiled_prefetch_k_cache;
@@ -598,19 +598,25 @@ public:
         // Prefetch the next K tile
         // there is no need to gaurd it with if statememt as prefetch will
         // ignore out of bound reading
-
-        bool sel_prefetch_k =
-            (split + DispatchPolicy::Stages) < kv_splits_cache;
-        auto &prefetch_k_selector =
-            sel_prefetch_k ? tiled_prefetch_k_cache : tiled_prefetch_k;
-        auto &pKgK_ = sel_prefetch_k ? pKgK_cache : pKgK;
-        int k_prefetch_idx =
+        if (PagedKV) {
+          CUTLASS_PRAGMA_UNROLL
+          for (int j = 0; j < size<4>(pKgK_cache); j++) {
+            prefetch(tiled_prefetch_k_cache, pKgK_cache(_, _, _, cached_nblock, j));
+          }
+        } else {
+          bool sel_prefetch_k =
+              (split + DispatchPolicy::Stages) < kv_splits_cache;
+          auto &prefetch_k_selector =
+              sel_prefetch_k ? tiled_prefetch_k_cache : tiled_prefetch_k;
+          auto &pKgK_ = sel_prefetch_k ? pKgK_cache : pKgK;
+          int k_prefetch_idx =
             sel_prefetch_k
                 ? PagedKV ? cached_nblock : split + DispatchPolicy::Stages
                 : split + DispatchPolicy::Stages - kv_splits_cache;
-        CUTLASS_PRAGMA_UNROLL
-        for (int j = 0; j < size<4>(pKgK_); j++) {
-          prefetch(prefetch_k_selector, pKgK_(_, _, _, k_prefetch_idx, j));
+          CUTLASS_PRAGMA_UNROLL
+          for (int j = 0; j < size<4>(pKgK_); j++) {
+            prefetch(prefetch_k_selector, pKgK_(_, _, _, k_prefetch_idx, j));
+          }
         }
         barrier_wait(barrier_scope);
       }

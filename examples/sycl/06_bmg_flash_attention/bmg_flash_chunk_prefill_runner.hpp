@@ -105,7 +105,7 @@ struct Options {
     if (cmd.check_cmd_line_flag("use_paged_kv")) {
         use_paged_kv = true;
         cmd.get_cmd_line_argument("page_size", page_size, 128);
-
+        seq_len_kv = 0; // seq_len_kv is not used when use paged kv
         if (page_size % 128 != 0) {
             std::cerr << "Invalid: page_size must be a multiple of 128" << std::endl;
             return;
