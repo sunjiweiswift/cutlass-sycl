@@ -248,8 +248,6 @@ public:
     auto num_heads_q = get<1>(params.problem_shape);
     auto num_heads_kv = get<2>(params.problem_shape);
 
-    // auto &seq_len_qo = get<3>(params.problem_shape); // seq_len_qo
-
     auto &head_size_qk = get<6>(params.problem_shape);
     auto &head_size_vo = get<7>(params.problem_shape);
     // Preconditions
@@ -277,7 +275,6 @@ public:
       auto blk_m_coord = get<0>(blk_coord); // seq_len_blk_idx
       auto blk_n_coord = 0;                   // nums_head_blk_idx
       auto q_head_coord = get<1>(blk_coord); // q_heads_idx
-
       auto batch_coord = get<2>(blk_coord); // batch_blk_idx
 
       // For variable sequence length case, batch is considered to be 1 (same
@@ -421,20 +418,14 @@ public:
 
       int cached_nblock = 0;
       if constexpr (PagedKV) {
-        if (seq_len_kv_cache != 0) {
-          int curr_batch_pages =
-              is_var_len
-                  ? mainloop_params.num_pages_per_seq[batch_coord + 1] -
-                        mainloop_params.num_pages_per_seq[batch_coord]
-                  : ceil_div(seq_len_kv_cache, mainloop_params.page_size);
-          int batch_offset =
-              is_var_len ? mainloop_params.num_pages_per_seq[batch_coord]
-                         : batch_coord * curr_batch_pages;
-          cached_nblock =
-              mainloop_params
-                  .ptr_page_table[batch_offset // page table for this batch
-          ] * tiles_per_page; // base block idx of physical page
-        }
+        int curr_batch_pages = ceil_div(seq_len_kv_cache, mainloop_params.page_size);
+        int batch_offset =
+            is_var_len ? mainloop_params.num_pages_per_seq[batch_coord]
+                       : batch_coord * curr_batch_pages;
+        cached_nblock =
+            mainloop_params
+                .ptr_page_table[batch_offset // page table for this batch
+        ] * tiles_per_page; // base block idx of physical page
       }
       // The headsize for both cached and non-cached version is the same
       for (int j = 0; j < size<4>(pKgK1_); j++) {
@@ -516,7 +507,7 @@ public:
           }
         }
 
-        if constexpr(!(CausalMask || LocalMask)) {
+        if constexpr(!(CausalMask || LocalMask) && PagedKV) {
         // mask padding
           const int item_id = thread_idx % SubgroupSize;
           int col_start = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache + seq_len_kv);
@@ -539,7 +530,8 @@ public:
           }
         }
         auto &tiled_prefetch_v_ =
-            is_KV_cache ? tiled_prefetch_v_cache : tiled_prefetch_v;
+            is_KV_cache ? tiled_prefetch_v_cache
+                        : tiled_prefetch_v;
         auto &pVgV_ = is_KV_cache ? pVgV_cache : pVgV;
         int v_prefetch_idx = is_KV_cache ? PagedKV ? cached_nblock : split
                                          : split - kv_splits_cache;
@@ -550,11 +542,7 @@ public:
         bool is_next_KV_cache = next_cached_nblock < kv_splits_cache;
         if constexpr (PagedKV) {
           if (is_next_KV_cache) {
-            int curr_batch_pages =
-                is_var_len
-                    ? mainloop_params.num_pages_per_seq[batch_coord + 1] -
-                          mainloop_params.num_pages_per_seq[batch_coord]
-                    : ceil_div(seq_len_kv_cache, mainloop_params.page_size);
+            int curr_batch_pages = ceil_div(seq_len_kv_cache, mainloop_params.page_size);
             int next_page_logical_idx =
                 next_cached_nblock * QK_BLK_N / params.mainloop.page_size;
             int batch_offset =
@@ -598,7 +586,7 @@ public:
         // Prefetch the next K tile
         // there is no need to gaurd it with if statememt as prefetch will
         // ignore out of bound reading
-        if (PagedKV) {
+        if constexpr (PagedKV) {
           CUTLASS_PRAGMA_UNROLL
           for (int j = 0; j < size<4>(pKgK_cache); j++) {
             prefetch(tiled_prefetch_k_cache, pKgK_cache(_, _, _, cached_nblock, j));

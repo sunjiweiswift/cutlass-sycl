@@ -285,12 +285,13 @@ bool verify(ProblemShapeType problem_size, Options options) {
           }
           if (seq_len_kv > 0) {
             syclcompat::memcpy<ElementK>(
-              block_K_concat.get() + curr_batch_pages * paged_kv_cache.page_size * num_heads_kv *head_size_qk,
+              // block_K_concat.get() + curr_batch_pages * paged_kv_cache.page_sze * num_heads_kv *head_size_qk,
+              block_K_concat.get() + seq_len_kv_cache * num_heads_kv * head_size_qk,
               block_K.get() + offset_k,
               seq_len_kv * num_heads_kv * head_size_qk
             );
             syclcompat::memcpy<ElementV>(
-              block_V_concat.get() + curr_batch_pages * paged_kv_cache.page_size * num_heads_kv *head_size_vo,
+              block_V_concat.get() + seq_len_kv_cache * num_heads_kv * head_size_vo,
               block_V.get() + offset_v,
               seq_len_kv * num_heads_kv * head_size_vo
             );
