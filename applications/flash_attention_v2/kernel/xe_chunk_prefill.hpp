@@ -115,7 +115,6 @@ public:
   static_assert(!(CausalMask && LocalMask), "Cannot be both causal and local");
   static constexpr bool PagedKV = CollectiveMainloop::PagedKV;
 
-
   static constexpr int SubgroupSize =
       CollectiveMainloop::SubgroupSize; // sub_group size
   static constexpr uint32_t MaxThreadsPerBlock =
@@ -274,8 +273,8 @@ public:
               .get_block_coord(); // head_size_blk_idx, seq_len_blk_idx,
                                   // batch_blk_idx, num_heads_blk_idx
 
-      auto blk_m_coord = get<0>(blk_coord); // seq_len_blk_idx
-      auto blk_n_coord = 0;                   // nums_head_blk_idx
+      auto blk_m_coord = get<0>(blk_coord);  // seq_len_blk_idx
+      auto blk_n_coord = 0;                  // nums_head_blk_idx
       auto q_head_coord = get<1>(blk_coord); // q_heads_idx
 
       auto batch_coord = get<2>(blk_coord); // batch_blk_idx
@@ -312,14 +311,14 @@ public:
       // Calculate the seq_len_idx (blk_m_coord * get<0>(TileShapeOutput{}))
       // and check if it is still within bounds of the actual seq_len_qo
       // (get<0>(sequence_length_shape)).
-      if (blk_m_coord * get<0>(TileShapeOutput{}) >=
-          seq_len_qo) {
+      if (blk_m_coord * get<0>(TileShapeOutput{}) >= seq_len_qo) {
         continue;
       }
 
       const int seq_coord =
-          cute::min(seq_len_qo, (blk_m_coord * QK_BLK_M + (sub_group_id / PV_ATOM_N) * QK_SG_M) %
-          seq_len_qo);
+          cute::min(seq_len_qo, (blk_m_coord * QK_BLK_M +
+                                 (sub_group_id / PV_ATOM_N) * QK_SG_M) %
+                                    seq_len_qo);
       auto offset = cute::min(seq_len_qo, seq_len_kv); //(2048, 1024)
       auto discard_seq_coord = seq_len_qo - offset;    // 1024
       auto full_tile_offset = seq_len_kv - offset;     // 0
@@ -378,7 +377,6 @@ public:
           params.mainloop, params.problem_shape, sequence_length_shape,
           batch_coord, q_head_coord);
 
-
       // we limit the horisontal size to two subgroup, the empirical resutls
       // show that reading the two cacheline side by side in gives better
       // performance and anything after that does not have an effect on
@@ -423,10 +421,7 @@ public:
       if constexpr (PagedKV) {
         if (seq_len_kv_cache != 0) {
           int curr_batch_pages =
-              is_var_len
-                  ? mainloop_params.num_pages_per_seq[batch_coord + 1] -
-                        mainloop_params.num_pages_per_seq[batch_coord]
-                  : ceil_div(seq_len_kv_cache, mainloop_params.page_size);
+              ceil_div(seq_len_kv_cache, mainloop_params.page_size);
           int batch_offset =
               is_var_len ? mainloop_params.num_pages_per_seq[batch_coord]
                          : batch_coord * curr_batch_pages;
@@ -467,7 +462,8 @@ public:
       // operation
       static constexpr int barrier_scope = CausalMask ? 3 : 2;
       CUTLASS_PRAGMA_UNROLL
-      for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
+      for (int split = 0; split < kv_splits - static_cast<int>(CausalMask);
+           split++) {
         barrier_arrive(barrier_scope);
 
         bool is_KV_cache = split < kv_splits_cache;
@@ -478,7 +474,7 @@ public:
                                : gV(_, _, split - kv_splits_cache);
         // 2) Create Tensor S
         Tensor tSr = make_tensor<ElementAccumulator>(
-            Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{}); 
+            Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{});
         clear(tSr);
         // 3) Perform GEMM S = Q*K
         // Then modify layout to LayoutQ = ((seq_leq_q, group_head_q),
@@ -493,38 +489,46 @@ public:
           const int item_id = thread_idx % SubgroupSize;
           int col_idx = item_id;
           if (split < kv_splits_cache) {
-            col_idx += split * cute::min(QK_BLK_N, seq_len_kv_cache) ;
+            col_idx += split * cute::min(QK_BLK_N, seq_len_kv_cache);
           } else {
-            col_idx += seq_len_kv_cache + (split - kv_splits_cache) * cute::min(QK_BLK_N, seq_len_kv);
+            col_idx += seq_len_kv_cache + (split - kv_splits_cache) *
+                                              cute::min(QK_BLK_N, seq_len_kv);
           }
 
           CUTLASS_PRAGMA_UNROLL
           for (int n = 0; n < FragsN;
-            n++, col_idx += get<1>(MmaAtomShape())) { // 4
+               n++, col_idx += get<1>(MmaAtomShape())) { // 4
+            CUTLASS_PRAGMA_UNROLL
+            for (int m = 0; m < FragsM; m++) { // 2
+              int row_idx = m * Vec + seq_coord;
               CUTLASS_PRAGMA_UNROLL
-              for (int m = 0; m < FragsM; m++) { // 2
-                int row_idx = m * Vec + seq_coord;
-                CUTLASS_PRAGMA_UNROLL
-                for (int row = 0; row < Vec; row++) { // 8
-                  bool left_mask = col_idx < cute::max(0, row + row_idx + seq_len_kv_cache - mainloop_params.window_left);
-                  bool right_mask = col_idx > cute::min(seq_len_kv_cache + seq_len_kv, row + row_idx + seq_len_kv_cache + mainloop_params.window_right);
-                  if (left_mask || right_mask) {
-                    tSr(row, m, n) = ElementAccumulator{-INFINITY};
-                  }
+              for (int row = 0; row < Vec; row++) { // 8
+                bool left_mask =
+                    col_idx < cute::max(0, row + row_idx + seq_len_kv_cache -
+                                               mainloop_params.window_left);
+                bool right_mask =
+                    col_idx > cute::min(seq_len_kv_cache + seq_len_kv,
+                                        row + row_idx + seq_len_kv_cache +
+                                            mainloop_params.window_right);
+                if (left_mask || right_mask) {
+                  tSr(row, m, n) = ElementAccumulator{-INFINITY};
                 }
+              }
             }
           }
         }
 
-        if constexpr(!(CausalMask || LocalMask)) {
-        // mask padding
+        if constexpr (!(CausalMask || LocalMask)) {
+          // mask padding
           const int item_id = thread_idx % SubgroupSize;
-          int col_start = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache);
+          int col_start =
+              item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache);
           int col_end = col_start + (FragsN - 1) * get<1>(MmaAtomShape());
           if (col_end >= seq_len_kv_cache) {
             int col_idx = col_start;
             CUTLASS_PRAGMA_UNROLL
-            for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
+            for (int n = 0; n < FragsN;
+                 n++, col_idx += get<1>(MmaAtomShape())) { // 4
               if (col_idx < seq_len_kv_cache) {
                 continue;
               }
@@ -551,10 +555,7 @@ public:
         if constexpr (PagedKV) {
           if (is_next_KV_cache) {
             int curr_batch_pages =
-                is_var_len
-                    ? mainloop_params.num_pages_per_seq[batch_coord + 1] -
-                          mainloop_params.num_pages_per_seq[batch_coord]
-                    : ceil_div(seq_len_kv_cache, mainloop_params.page_size);
+                ceil_div(seq_len_kv_cache, mainloop_params.page_size);
             int next_page_logical_idx =
                 next_cached_nblock * QK_BLK_N / params.mainloop.page_size;
             int batch_offset =
@@ -582,7 +583,7 @@ public:
         // // 4) Fused softmax
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax(split == 0, tSr, max_reg, sum_reg, out_reg);
-   
+
         // 5) Perform GEMM O = S*V
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr, gV_, out_reg,
                                                mainloop_params, is_KV_cache);
@@ -656,7 +657,6 @@ public:
                                                gV(_, _, kv_splits_new - 1),
                                                out_reg, mainloop_params, false);
       }
-
 
       // Epilogue
       auto epilogue_params =
