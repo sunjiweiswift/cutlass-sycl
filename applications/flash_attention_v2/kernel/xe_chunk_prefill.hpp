@@ -466,17 +466,6 @@ public:
       // different for each subgroup due to triangular nature of causal based
       // operation
       static constexpr int barrier_scope = CausalMask ? 3 : 2;
-      // int split_start = 0;
-      // int split_end = kv_splits;
-      // if constexpr (CausalMask) {
-      //   split_end = kv_splits - 1;
-      // } else if (LocalMask) {
-      //   split_start = cute::max(0, kv_splits_cache - ceil_div(mainloop_params.window_left, QK_BLK_N) - 1); // skip the first split as it is not needed
-      //   split_end = cute::min(kv_splits, kv_splits_cache + ceil_div(mainloop_params.window_right, QK_BLK_N) + 1); // skip the last split as it is not needed
-      // }
-      // if (thread0()) {
-      //   print("split_start %d split_end %d\n", split_start, split_end);
-      // }
       CUTLASS_PRAGMA_UNROLL
       for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
         barrier_arrive(barrier_scope);

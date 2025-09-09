@@ -84,7 +84,7 @@ int main(int argc, const char **argv) {
     return -1;
   }
 
-  constexpr int PipelineStages = 2;
+  constexpr int PipelineStages = 0;
 #if HEAD_DIM == 64
   using ShapeQK = Shape<_128, _64, _64>;
   using ShapePV = Shape<_128, _32, _64>;
