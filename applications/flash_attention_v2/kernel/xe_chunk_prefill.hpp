@@ -527,6 +527,28 @@ public:
           }
         }
 
+        if constexpr(!(CausalMask || LocalMask)) {
+        // mask padding
+          const int item_id = thread_idx % SubgroupSize;
+          int col_start = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache);
+          int col_end = col_start + (FragsN - 1) * get<1>(MmaAtomShape());
+          if (col_end >= seq_len_kv_cache) {
+            int col_idx = col_start;
+            CUTLASS_PRAGMA_UNROLL
+            for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
+              if (col_idx < seq_len_kv_cache) {
+                continue;
+              }
+              CUTLASS_PRAGMA_UNROLL
+              for (int m = 0; m < FragsM; m++) { // 2
+                CUTLASS_PRAGMA_UNROLL
+                for (int row = 0; row < Vec; row++) { // 8
+                  tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                }
+              }
+            }
+          }
+        }
         auto &tiled_prefetch_v_ =
             is_KV_cache ? tiled_prefetch_v_cache : tiled_prefetch_v;
         auto &pVgV_ = is_KV_cache ? pVgV_cache : pVgV;

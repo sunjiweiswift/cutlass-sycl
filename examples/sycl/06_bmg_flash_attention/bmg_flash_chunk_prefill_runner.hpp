@@ -633,14 +633,6 @@ bool verify(ProblemShapeType problem_size, Options options) {
       paged_kv_cache.num_pages_per_seq.reset(num_pages_per_seq.size());
       syclcompat::memcpy(paged_kv_cache.num_pages_per_seq.get(), num_pages_per_seq.data(), num_pages_per_seq.size() * sizeof(int));
 
-      std::cout << "num_pages " << num_pages << std::endl;
-      for (int i = 0; i < num_pages_per_seq.size(); i++)
-        std::cout << "num_pages_per_seq[" << i << "] = " << num_pages_per_seq[i] << " ";
-      std::cout << std::endl;
-
-      for (int i = 0; i < num_pages; i++)
-        std::cout << "page_table[" << i << "] = " << page_mapping[i] << " ";
-      std::cout << std::endl;
       block_K_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_qk);
       block_V_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_vo);
     }
