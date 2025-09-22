@@ -632,7 +632,22 @@ bool verify(ProblemShapeType problem_size, Options options) {
       block_V_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_vo);
     }
 
-    initialize_block(block_Q, seed + 2023);
+    // initialize_block(block_Q, seed + 2023);
+    std::vector<ElementQ> host_Q(block_Q.size());
+
+    for (int b = 0; b < batch; b++) {
+      for (int h = 0; h < num_heads_q; h++) {
+        for (int s = 0; s < seq_len_qo; s++) {
+          for (int d = 0; d < head_size_qk; d++) {
+            int index = d + h * head_size_qk + s * num_heads_q * head_size_qk + b * seq_len_qo * num_heads_q * head_size_qk;
+            // Use a simple formula to initialize the input data
+            host_Q[index] = static_cast<ElementQ>(index % 13 + 1);
+          }
+        }
+      }
+    }
+    compat::memcpy<ElementQ>(block_Q.get(), host_Q.data(), host_Q.size());
+        
     initialize_block(block_K, seed + 2022);
     initialize_block(block_V, seed + 2021);
     initialize_block(block_K_cache, seed + 2024);

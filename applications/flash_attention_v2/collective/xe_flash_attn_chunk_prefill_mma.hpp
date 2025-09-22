@@ -300,7 +300,18 @@ struct FlashChunkPrefillMma<
     //
     // Mainloop
     //
-
+    if (thread(0, 0)) {
+        print("\n gQ \n");
+        print(gQ);
+        print("\n take<0, 3>(tCgQ.shape()) \n");
+        print(take<0, 3>(tCgQ.shape()));
+        print("\n tCgQ \n");
+        print(tCgQ);
+        print("\n gmem_tiled_copy_q \n");
+        print(params.gmem_tiled_copy_q);
+        print("\n tCrQ \n");
+        print(tCrQ);
+    }
     for (int k_tile = 0; k_tile < k_tile_count; ++k_tile) {
       copy(params.gmem_tiled_copy_q, tQgQ(_, _, _, k_tile), tQrQ);
       copy(gmem_tiled_copy_k, tKgK(_, _, _, k_tile), tKrK);
