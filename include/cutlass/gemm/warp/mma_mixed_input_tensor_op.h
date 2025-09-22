@@ -149,7 +149,8 @@ private:
 public:
   CUTLASS_DEVICE
   FragmentShuffler() {
-    int lane_id = cutlass::arch::LaneId();
+    int lane_id = 0;
+    // int lane_id = cutlass::arch::LaneId();
     delta_up_ = (lane_id & 1) + ((lane_id & 2) >> 1);
     delta_down_ = 2 - delta_up_;
     odd_even_lane_id_ = static_cast<int>(lane_id & 1);
@@ -233,7 +234,8 @@ private:
 public:
   CUTLASS_DEVICE
   FragmentShuffler() {
-    int lane_id = cutlass::arch::LaneId();
+    // int lane_id = cutlass::arch::LaneId();
+    int lane_id = 0;
     delta_up_ = (lane_id & 1) + ((lane_id & 2) >> 1);
     delta_down_ = 2 - delta_up_;
     odd_even_lane_id_ = static_cast<int>(lane_id & 1);
