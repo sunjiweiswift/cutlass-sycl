@@ -109,7 +109,8 @@ public:
   // MSVC requires the cast to fix a warning-as-error.
   static constexpr int SharedStorageSize = 0;
 
-  static constexpr bool CausalMask = CollectiveMainloop::CausalMask;
+  static constexpr bool CausalMask = false;
+  // static constexpr bool CausalMask = CollectiveMainloop::CausalMask;
   static constexpr bool LocalMask = CollectiveMainloop::LocalMask;
 
   static_assert(!(CausalMask && LocalMask), "Cannot be both causal and local");
@@ -262,7 +263,9 @@ public:
                   "num_heads_kv].");
 
     int thread_idx = int(ThreadIdxX());
-    int sub_group_id = thread_idx / SubgroupSize;
+    // int sub_group_id = thread_idx / SubgroupSize;
+  auto sub_group_id = get_sub_group_id();
+    auto local_id = get_sub_group_local_id();
 
     TileScheduler tile_scheduler{params.scheduler};
     CUTLASS_PRAGMA_NO_UNROLL
@@ -457,10 +460,25 @@ public:
       // of the barrier to workgroup level as the number n block is
       // different for each subgroup due to triangular nature of causal based
       // operation
-      static constexpr int barrier_scope = CausalMask ? 3 : 2;
+      // static constexpr int barrier_scope = CausalMask ? 3 : 2;
+      static constexpr int barrier_scope = 2;
+
+      int q_start_coord = blk_m_coord * QK_BLK_M;
+      int q_end_coord = cute::min(q_start_coord + QK_BLK_M, seq_len_qo);
+      int seq_diff = seq_len_kv_cache - seq_len_qo;
+
       CUTLASS_PRAGMA_UNROLL
-      for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
+      for (int split = 0; split < kv_splits; split++) {
+      // for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
         barrier_arrive(barrier_scope);
+
+        int kv_start_coord = split * QK_BLK_N;
+
+        if constexpr (CausalMask) {
+          if (kv_start_coord >= q_end_coord + seq_diff)
+            break;
+        }
+
 
         bool is_KV_cache = PagedKV ? true : split < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         // 1) Load KV (performed inside mmaQK)
@@ -510,23 +528,64 @@ public:
           }
         }
 
-        if constexpr(!(CausalMask || LocalMask) && PagedKV) {
-        // Processing Not divisible, mask padding
-          const int item_id = thread_idx % SubgroupSize;
-          int col_idx = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache + seq_len_kv);
-            CUTLASS_PRAGMA_UNROLL
-            for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
+        if constexpr( PagedKV) {
+        // // if constexpr(!(CausalMask || LocalMask) && PagedKV) {
+        // // Processing Not divisible, mask padding
+        //   const int item_id = thread_idx % SubgroupSize;
+        //   int col_idx = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache + seq_len_kv);
+        //     CUTLASS_PRAGMA_UNROLL
+        //     for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
+        //       CUTLASS_PRAGMA_UNROLL
+        //       for (int m = 0; m < FragsM; m++) { // 2
+        //         int row_idx = m * Vec + seq_coord;
+        //         CUTLASS_PRAGMA_UNROLL
+        //         for (int row = 0; row < Vec; row++) { // 8
+        //           if (col_idx >= seq_len_kv_cache + seq_len_kv || row_idx + row >= seq_len_qo) {
+        //             tSr(row, m, n) = ElementAccumulator{-INFINITY};
+        //         }
+        //       }
+        //     }
+        //   }
+
+
+         int col_start = local_id + kv_start_coord;
+        int col_end = col_start + (FragsN - 1) * get<1>(MmaAtomShape());
+        if (col_end >= seq_len_kv_cache) {
+          int col_idx = col_start;
+          CUTLASS_PRAGMA_UNROLL
+          for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
+            if (col_idx >= seq_len_kv_cache) {
               CUTLASS_PRAGMA_UNROLL
               for (int m = 0; m < FragsM; m++) { // 2
-                int row_idx = m * Vec + seq_coord;
                 CUTLASS_PRAGMA_UNROLL
                 for (int row = 0; row < Vec; row++) { // 8
-                  if (col_idx >= seq_len_kv_cache + seq_len_kv || row_idx + row >= seq_len_qo) {
-                    tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                  tSr(row, m, n) = ElementAccumulator{-INFINITY};
                 }
               }
             }
           }
+        }
+         if constexpr (CausalMask) {
+          int row_start = q_start_coord + sub_group_id * QK_SG_M;
+          if (row_start + seq_diff < col_end) {
+            int col_idx = col_start;
+            CUTLASS_PRAGMA_UNROLL
+            for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
+              if (col_idx > row_start + seq_diff) {
+                CUTLASS_PRAGMA_UNROLL
+                for (int m = 0; m < FragsM; m++) { // 2
+                  CUTLASS_PRAGMA_UNROLL
+                  for (int row = 0; row < Vec; row++) { // 8
+                    int row_idx = row_start + m * Vec + row;
+                    if (row_idx + seq_diff < col_idx)
+                      tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                  }
+                }
+              }
+            }
+          }
+        }
+
         }
         auto &tiled_prefetch_v_ =
             is_KV_cache ? tiled_prefetch_v_cache
@@ -608,7 +667,7 @@ public:
         barrier_wait(barrier_scope);
       }
 
-      if constexpr (CausalMask) {
+      if constexpr (false) {
         // BAND Matrix
         // 1) Load K (performed inside mmaQK)
         // 2) Create Tensor S
@@ -624,12 +683,16 @@ public:
         // while doing softmax. because the gap between the two MMA is big,
         // prefetching it the same way as cutlass K matrix does not make sense
         auto &pVgV_ = PagedKV ? pVgV_cache : pVgV;
+        auto &tiled_prefetch_v_ =
+            PagedKV ? tiled_prefetch_v_cache
+                        : tiled_prefetch_v;
         for (int i = 0; i < size<1>(pVgV_); i++) {
-          // prefetch(tiled_prefetch_v, pVgV_(_, i, _, PagedKV ? kv_splits_cache - 1 : kv_splits_new - 1));
+          // prefetch(tiled_prefetch_v, pVgV_(_, i, _, 0));
+          prefetch(tiled_prefetch_v_, pVgV_(_, i, _, ((PagedKV ? kv_splits_cache : kv_splits_new) - 1)));
         }
         // mask the elements of each tile where j > i
         const int item_id = thread_idx % SubgroupSize;
-        int col_idx = item_id + max(0, (kv_splits_new - 1)) * QK_BLK_N;
+        int col_idx = item_id + ((PagedKV ? kv_splits_cache : kv_splits_new) - 1) * QK_BLK_N;
         CUTLASS_PRAGMA_UNROLL
         for (int n = 0; n < FragsN;
              n++, col_idx += get<1>(MmaAtomShape())) { // 4
@@ -639,7 +702,7 @@ public:
             CUTLASS_PRAGMA_UNROLL
             for (int row = 0; row < Vec; row++, row_idx++) { // 8
               if (col_idx > row_idx + seq_len_kv_cache + seq_len_kv - seq_len_qo) {
-                tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                // tSr(row, m, n) = ElementAccumulator{-INFINITY};
               }
             }
           }
