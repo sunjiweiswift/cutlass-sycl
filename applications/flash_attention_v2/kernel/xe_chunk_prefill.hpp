@@ -707,9 +707,6 @@ public:
             }
           }
         }
-        if (thread(0, 0)) {
-          print_tensor(tSr);
-        }
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax(kv_splits == 1, tSr, max_reg, sum_reg, out_reg);
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr,
