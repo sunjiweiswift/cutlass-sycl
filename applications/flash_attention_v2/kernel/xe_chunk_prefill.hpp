@@ -109,13 +109,11 @@ public:
   // MSVC requires the cast to fix a warning-as-error.
   static constexpr int SharedStorageSize = 0;
 
-  static constexpr bool CausalMask = false;
-  // static constexpr bool CausalMask = CollectiveMainloop::CausalMask;
+  static constexpr bool CausalMask = CollectiveMainloop::CausalMask;
   static constexpr bool LocalMask = CollectiveMainloop::LocalMask;
 
   static_assert(!(CausalMask && LocalMask), "Cannot be both causal and local");
   static constexpr bool PagedKV = CollectiveMainloop::PagedKV;
-
 
   static constexpr int SubgroupSize =
       CollectiveMainloop::SubgroupSize; // sub_group size
@@ -264,7 +262,7 @@ public:
 
     int thread_idx = int(ThreadIdxX());
     // int sub_group_id = thread_idx / SubgroupSize;
-  auto sub_group_id = get_sub_group_id();
+    auto sub_group_id = get_sub_group_id();
     auto local_id = get_sub_group_local_id();
 
     TileScheduler tile_scheduler{params.scheduler};
@@ -275,10 +273,10 @@ public:
               .get_block_coord(); // head_size_blk_idx, seq_len_blk_idx,
                                   // batch_blk_idx, num_heads_blk_idx
 
-      auto blk_m_coord = get<0>(blk_coord); // seq_len_blk_idx
-      auto blk_n_coord = 0;                   // nums_head_blk_idx
+      auto blk_m_coord = get<0>(blk_coord);  // seq_len_blk_idx
+      auto blk_n_coord = 0;                  // nums_head_blk_idx
       auto q_head_coord = get<1>(blk_coord); // q_heads_idx
-      auto batch_coord = get<2>(blk_coord); // batch_blk_idx
+      auto batch_coord = get<2>(blk_coord);  // batch_blk_idx
 
       // For variable sequence length case, batch is considered to be 1 (same
       // as group gemm). For fixed sequence length case, the l_coord is the
@@ -312,24 +310,24 @@ public:
       // Calculate the seq_len_idx (blk_m_coord * get<0>(TileShapeOutput{}))
       // and check if it is still within bounds of the actual seq_len_qo
       // (get<0>(sequence_length_shape)).
-      if (blk_m_coord * get<0>(TileShapeOutput{}) >=
-          seq_len_qo) {
+      if (blk_m_coord * get<0>(TileShapeOutput{}) >= seq_len_qo) {
         continue;
       }
 
       const int seq_coord =
-          cute::min(seq_len_qo, (blk_m_coord * QK_BLK_M + (sub_group_id / PV_ATOM_N) * QK_SG_M) %
-          seq_len_qo);
+          cute::min(seq_len_qo, (blk_m_coord * QK_BLK_M +
+                                 (sub_group_id / PV_ATOM_N) * QK_SG_M) %
+                                    seq_len_qo);
       auto offset = cute::min(seq_len_qo, seq_len_kv); //(2048, 1024)
       auto discard_seq_coord = seq_len_qo - offset;    // 1024
       auto full_tile_offset = seq_len_kv - offset;     // 0
 
       const int seq_len = seq_len_kv;
-          // CausalMask
-          //     ? full_tile_offset +
-          //           cute::min(seq_len_kv, seq_coord - discard_seq_coord) +
-          //           QK_SG_M
-          //     : seq_len_kv;
+      // CausalMask
+      //     ? full_tile_offset +
+      //           cute::min(seq_len_kv, seq_coord - discard_seq_coord) +
+      //           QK_SG_M
+      //     : seq_len_kv;
 
       const int kv_splits_new = cute::ceil_div(seq_len, QK_BLK_N);
       const int kv_splits_cache = cute::ceil_div(seq_len_kv_cache, QK_BLK_N);
@@ -379,7 +377,6 @@ public:
           params.mainloop, params.problem_shape, sequence_length_shape,
           batch_coord, q_head_coord);
 
-
       // we limit the horisontal size to two subgroup, the empirical resutls
       // show that reading the two cacheline side by side in gives better
       // performance and anything after that does not have an effect on
@@ -422,14 +419,15 @@ public:
 
       int cached_nblock = 0;
       if constexpr (PagedKV) {
-        int curr_batch_pages = ceil_div(seq_len_kv_cache, mainloop_params.page_size);
-        int batch_offset =
-            is_var_len ? mainloop_params.num_pages_per_seq[batch_coord]
-                       : batch_coord * curr_batch_pages;
+        int curr_batch_pages =
+            ceil_div(seq_len_kv_cache, mainloop_params.page_size);
+        int batch_offset = is_var_len
+                               ? mainloop_params.num_pages_per_seq[batch_coord]
+                               : batch_coord * curr_batch_pages;
         cached_nblock =
             mainloop_params
                 .ptr_page_table[batch_offset // page table for this batch
-        ] * tiles_per_page; // base block idx of physical page
+        ] * tiles_per_page;                  // base block idx of physical page
       }
       // The headsize for both cached and non-cached version is the same
       for (int j = 0; j < size<4>(pKgK1_); j++) {
@@ -460,8 +458,7 @@ public:
       // of the barrier to workgroup level as the number n block is
       // different for each subgroup due to triangular nature of causal based
       // operation
-      // static constexpr int barrier_scope = CausalMask ? 3 : 2;
-      static constexpr int barrier_scope = 2;
+      static constexpr int barrier_scope = CausalMask ? 3 : 2;
 
       int q_start_coord = blk_m_coord * QK_BLK_M;
       int q_end_coord = cute::min(q_start_coord + QK_BLK_M, seq_len_qo);
@@ -469,7 +466,8 @@ public:
 
       CUTLASS_PRAGMA_UNROLL
       for (int split = 0; split < kv_splits; split++) {
-      // for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
+        // for (int split = 0; split < kv_splits - static_cast<int>(CausalMask);
+        // split++) {
         barrier_arrive(barrier_scope);
 
         int kv_start_coord = split * QK_BLK_N;
@@ -479,8 +477,9 @@ public:
             break;
         }
 
-
-        bool is_KV_cache = PagedKV ? true : split < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
+        bool is_KV_cache =
+            PagedKV ? true : split < kv_splits_cache; // PagedKV seq_len_kv_new
+                                                      // = 0, all KV is kv_cache
         // 1) Load KV (performed inside mmaQK)
         auto gK_ = is_KV_cache ? gK_cache(_, _, cached_nblock, _)
                                : gK(_, _, split - kv_splits_cache, _);
@@ -488,7 +487,7 @@ public:
                                : gV(_, _, split - kv_splits_cache);
         // 2) Create Tensor S
         Tensor tSr = make_tensor<ElementAccumulator>(
-            Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{}); 
+            Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{});
         clear(tSr);
         // 3) Perform GEMM S = Q*K
         // Then modify layout to LayoutQ = ((seq_leq_q, group_head_q),
@@ -504,92 +503,101 @@ public:
           const int item_id = thread_idx % SubgroupSize;
           int col_idx;
           if (split < kv_splits_cache) {
-            col_idx = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache) ;
+            col_idx = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache);
           } else {
-            col_idx = item_id + seq_len_kv_cache + (split - kv_splits_cache) * cute::min(QK_BLK_N, seq_len_kv);
+            col_idx =
+                item_id + seq_len_kv_cache +
+                (split - kv_splits_cache) * cute::min(QK_BLK_N, seq_len_kv);
           }
 
           CUTLASS_PRAGMA_UNROLL
           for (int n = 0; n < FragsN;
-            n++, col_idx += get<1>(MmaAtomShape())) { // 4
+               n++, col_idx += get<1>(MmaAtomShape())) { // 4
+            CUTLASS_PRAGMA_UNROLL
+            for (int m = 0; m < FragsM; m++) { // 2
+              int row_idx = m * Vec + seq_coord;
+              int col_ref = seq_len_kv_cache + seq_len_kv - seq_len_qo;
               CUTLASS_PRAGMA_UNROLL
-              for (int m = 0; m < FragsM; m++) { // 2
-                int row_idx = m * Vec + seq_coord;
-                int col_ref = seq_len_kv_cache + seq_len_kv -  seq_len_qo;
-                CUTLASS_PRAGMA_UNROLL
-                for (int row = 0; row < Vec; row++) { // 8
-                  bool left_mask = col_idx < cute::max(0, row + row_idx + col_ref - mainloop_params.window_left);
-                  bool right_mask = col_idx > cute::min(seq_len_kv_cache + seq_len_kv, row + row_idx + col_ref + mainloop_params.window_right);
-                  if (left_mask || right_mask) {
-                    tSr(row, m, n) = ElementAccumulator{-INFINITY};
-                  }
-                }
-            }
-          }
-        }
-
-        if constexpr( PagedKV) {
-        // // if constexpr(!(CausalMask || LocalMask) && PagedKV) {
-        // // Processing Not divisible, mask padding
-        //   const int item_id = thread_idx % SubgroupSize;
-        //   int col_idx = item_id + split * cute::min(QK_BLK_N, seq_len_kv_cache + seq_len_kv);
-        //     CUTLASS_PRAGMA_UNROLL
-        //     for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
-        //       CUTLASS_PRAGMA_UNROLL
-        //       for (int m = 0; m < FragsM; m++) { // 2
-        //         int row_idx = m * Vec + seq_coord;
-        //         CUTLASS_PRAGMA_UNROLL
-        //         for (int row = 0; row < Vec; row++) { // 8
-        //           if (col_idx >= seq_len_kv_cache + seq_len_kv || row_idx + row >= seq_len_qo) {
-        //             tSr(row, m, n) = ElementAccumulator{-INFINITY};
-        //         }
-        //       }
-        //     }
-        //   }
-
-
-         int col_start = local_id + kv_start_coord;
-        int col_end = col_start + (FragsN - 1) * get<1>(MmaAtomShape());
-        if (col_end >= seq_len_kv_cache) {
-          int col_idx = col_start;
-          CUTLASS_PRAGMA_UNROLL
-          for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
-            if (col_idx >= seq_len_kv_cache) {
-              CUTLASS_PRAGMA_UNROLL
-              for (int m = 0; m < FragsM; m++) { // 2
-                CUTLASS_PRAGMA_UNROLL
-                for (int row = 0; row < Vec; row++) { // 8
+              for (int row = 0; row < Vec; row++) { // 8
+                bool left_mask =
+                    col_idx < cute::max(0, row + row_idx + col_ref -
+                                               mainloop_params.window_left);
+                bool right_mask =
+                    col_idx > cute::min(seq_len_kv_cache + seq_len_kv,
+                                        row + row_idx + col_ref +
+                                            mainloop_params.window_right);
+                if (left_mask || right_mask) {
                   tSr(row, m, n) = ElementAccumulator{-INFINITY};
                 }
               }
             }
           }
         }
-         if constexpr (CausalMask) {
-          int row_start = q_start_coord + sub_group_id * QK_SG_M;
-          if (row_start + seq_diff < col_end) {
+
+        if constexpr (PagedKV) {
+          // // if constexpr(!(CausalMask || LocalMask) && PagedKV) {
+          // // Processing Not divisible, mask padding
+          //   const int item_id = thread_idx % SubgroupSize;
+          //   int col_idx = item_id + split * cute::min(QK_BLK_N,
+          //   seq_len_kv_cache + seq_len_kv);
+          //     CUTLASS_PRAGMA_UNROLL
+          //     for (int n = 0; n < FragsN; n++, col_idx +=
+          //     get<1>(MmaAtomShape())) { // 4
+          //       CUTLASS_PRAGMA_UNROLL
+          //       for (int m = 0; m < FragsM; m++) { // 2
+          //         int row_idx = m * Vec + seq_coord;
+          //         CUTLASS_PRAGMA_UNROLL
+          //         for (int row = 0; row < Vec; row++) { // 8
+          //           if (col_idx >= seq_len_kv_cache + seq_len_kv || row_idx +
+          //           row >= seq_len_qo) {
+          //             tSr(row, m, n) = ElementAccumulator{-INFINITY};
+          //         }
+          //       }
+          //     }
+          //   }
+
+          int col_start = local_id + kv_start_coord;
+          int col_end = col_start + (FragsN - 1) * get<1>(MmaAtomShape());
+          if (col_end >= seq_len_kv_cache) {
             int col_idx = col_start;
             CUTLASS_PRAGMA_UNROLL
-            for (int n = 0; n < FragsN; n++, col_idx += get<1>(MmaAtomShape())) { // 4
-              if (col_idx > row_start + seq_diff) {
+            for (int n = 0; n < FragsN;
+                 n++, col_idx += get<1>(MmaAtomShape())) { // 4
+              if (col_idx >= seq_len_kv_cache) {
                 CUTLASS_PRAGMA_UNROLL
                 for (int m = 0; m < FragsM; m++) { // 2
                   CUTLASS_PRAGMA_UNROLL
                   for (int row = 0; row < Vec; row++) { // 8
-                    int row_idx = row_start + m * Vec + row;
-                    if (row_idx + seq_diff < col_idx)
-                      tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                    tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                  }
+                }
+              }
+            }
+          }
+          if constexpr (CausalMask) {
+            int row_start = q_start_coord + sub_group_id * QK_SG_M;
+            if (row_start + seq_diff < col_end) {
+              int col_idx = col_start;
+              CUTLASS_PRAGMA_UNROLL
+              for (int n = 0; n < FragsN;
+                   n++, col_idx += get<1>(MmaAtomShape())) { // 4
+                if (col_idx > row_start + seq_diff) {
+                  CUTLASS_PRAGMA_UNROLL
+                  for (int m = 0; m < FragsM; m++) { // 2
+                    CUTLASS_PRAGMA_UNROLL
+                    for (int row = 0; row < Vec; row++) { // 8
+                      int row_idx = row_start + m * Vec + row;
+                      if (row_idx + seq_diff < col_idx)
+                        tSr(row, m, n) = ElementAccumulator{-INFINITY};
+                    }
                   }
                 }
               }
             }
           }
         }
-
-        }
         auto &tiled_prefetch_v_ =
-            is_KV_cache ? tiled_prefetch_v_cache
-                        : tiled_prefetch_v;
+            is_KV_cache ? tiled_prefetch_v_cache : tiled_prefetch_v;
         auto &pVgV_ = is_KV_cache ? pVgV_cache : pVgV;
         int v_prefetch_idx = is_KV_cache ? PagedKV ? cached_nblock : split
                                          : split - kv_splits_cache;
@@ -597,38 +605,40 @@ public:
           prefetch(tiled_prefetch_v_, pVgV_(_, i, _, v_prefetch_idx));
         }
         int next_cached_nblock = split + 1;
-        // bool is_next_KV_cache = PagedKV? true : next_cached_nblock < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
+        // bool is_next_KV_cache = PagedKV? true : next_cached_nblock <
+        // kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         if constexpr (PagedKV) {
           // if (is_next_KV_cache) {
-            int curr_batch_pages = ceil_div(seq_len_kv_cache, mainloop_params.page_size);
-            int next_page_logical_idx =
-                next_cached_nblock * QK_BLK_N / params.mainloop.page_size;
-            int batch_offset =
-                is_var_len ? mainloop_params.num_pages_per_seq[batch_coord]
-                           : batch_coord * curr_batch_pages;
-            bool valid_page = next_page_logical_idx < curr_batch_pages;
-            // get physical page idx from page table
-            if (valid_page) {
-              next_cached_nblock =
-                  params.mainloop.ptr_page_table
-                          [batch_offset +        // page table for this batch
-                           next_page_logical_idx // split (tile idx) to logical
-                                                 // page idx
-              ] * tiles_per_page + // base block idx of physical page
-                  next_cached_nblock % tiles_per_page; // offset within page
-            } else {
-              next_cached_nblock =
-                  curr_batch_pages *
-                  tiles_per_page; // push idx out of bounds to respect the
-                                  // boundary between batches
-            }
+          int curr_batch_pages =
+              ceil_div(seq_len_kv_cache, mainloop_params.page_size);
+          int next_page_logical_idx =
+              next_cached_nblock * QK_BLK_N / params.mainloop.page_size;
+          int batch_offset =
+              is_var_len ? mainloop_params.num_pages_per_seq[batch_coord]
+                         : batch_coord * curr_batch_pages;
+          bool valid_page = next_page_logical_idx < curr_batch_pages;
+          // get physical page idx from page table
+          if (valid_page) {
+            next_cached_nblock =
+                params.mainloop.ptr_page_table
+                        [batch_offset +        // page table for this batch
+                         next_page_logical_idx // split (tile idx) to logical
+                                               // page idx
+            ] * tiles_per_page + // base block idx of physical page
+                next_cached_nblock % tiles_per_page; // offset within page
+          } else {
+            next_cached_nblock =
+                curr_batch_pages *
+                tiles_per_page; // push idx out of bounds to respect the
+                                // boundary between batches
+          }
           // }
         }
 
         // 4) Fused softmax
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax(split == 0, tSr, max_reg, sum_reg, out_reg);
-   
+
         // 5) Perform GEMM O = S*V
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr, gV_, out_reg,
                                                mainloop_params, is_KV_cache);
@@ -639,7 +649,10 @@ public:
           prefetch(tiled_prefetch_q, pQgQ(_, _, _, i));
         }
 
-        is_KV_cache = PagedKV? true : next_cached_nblock < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
+        is_KV_cache = PagedKV ? true
+                              : next_cached_nblock <
+                                    kv_splits_cache; // PagedKV seq_len_kv_new =
+                                                     // 0, all KV is kv_cache
         cached_nblock = next_cached_nblock;
         // Prefetch the next K tile
         // there is no need to gaurd it with if statememt as prefetch will
@@ -647,7 +660,8 @@ public:
         if constexpr (PagedKV) {
           CUTLASS_PRAGMA_UNROLL
           for (int j = 0; j < size<4>(pKgK_cache); j++) {
-            prefetch(tiled_prefetch_k_cache, pKgK_cache(_, _, _, cached_nblock, j));
+            prefetch(tiled_prefetch_k_cache,
+                     pKgK_cache(_, _, _, cached_nblock, j));
           }
         } else {
           bool sel_prefetch_k =
@@ -656,9 +670,9 @@ public:
               sel_prefetch_k ? tiled_prefetch_k_cache : tiled_prefetch_k;
           auto &pKgK_ = sel_prefetch_k ? pKgK_cache : pKgK;
           int k_prefetch_idx =
-            sel_prefetch_k
-                ? PagedKV ? cached_nblock : split + DispatchPolicy::Stages
-                : split + DispatchPolicy::Stages - kv_splits_cache;
+              sel_prefetch_k
+                  ? PagedKV ? cached_nblock : split + DispatchPolicy::Stages
+                  : split + DispatchPolicy::Stages - kv_splits_cache;
           CUTLASS_PRAGMA_UNROLL
           for (int j = 0; j < size<4>(pKgK_); j++) {
             prefetch(prefetch_k_selector, pKgK_(_, _, _, k_prefetch_idx, j));
@@ -676,23 +690,29 @@ public:
         clear(tSr);
         // 3) Perform GEMM S = Q*K
 
-        collective_mma.mmaQK(tSr, gQ, PagedKV ? gK_cache(_, _, kv_splits_cache - 1, _) : gK(_, _, kv_splits_new - 1, _), tSr,
-                             ceil_div(head_size_qk, QK_BLK_K), mainloop_params,
-                             PagedKV); // PagedKV seq_len_kv_new = 0, all KV is kv_cache
+        collective_mma.mmaQK(
+            tSr, gQ,
+            PagedKV ? gK_cache(_, _, kv_splits_cache - 1, _)
+                    : gK(_, _, kv_splits_new - 1, _),
+            tSr, ceil_div(head_size_qk, QK_BLK_K), mainloop_params,
+            PagedKV); // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         // we only need one block ahead, there is enough gap to prefetch it
         // while doing softmax. because the gap between the two MMA is big,
         // prefetching it the same way as cutlass K matrix does not make sense
         auto &pVgV_ = PagedKV ? pVgV_cache : pVgV;
         auto &tiled_prefetch_v_ =
-            PagedKV ? tiled_prefetch_v_cache
-                        : tiled_prefetch_v;
+            PagedKV ? tiled_prefetch_v_cache : tiled_prefetch_v;
         for (int i = 0; i < size<1>(pVgV_); i++) {
           // prefetch(tiled_prefetch_v, pVgV_(_, i, _, 0));
-          prefetch(tiled_prefetch_v_, pVgV_(_, i, _, ((PagedKV ? kv_splits_cache : kv_splits_new) - 1)));
+          prefetch(tiled_prefetch_v_,
+                   pVgV_(_, i, _,
+                         ((PagedKV ? kv_splits_cache : kv_splits_new) - 1)));
         }
         // mask the elements of each tile where j > i
         const int item_id = thread_idx % SubgroupSize;
-        int col_idx = item_id + ((PagedKV ? kv_splits_cache : kv_splits_new) - 1) * QK_BLK_N;
+        int col_idx =
+            item_id +
+            ((PagedKV ? kv_splits_cache : kv_splits_new) - 1) * QK_BLK_N;
         CUTLASS_PRAGMA_UNROLL
         for (int n = 0; n < FragsN;
              n++, col_idx += get<1>(MmaAtomShape())) { // 4
@@ -701,7 +721,8 @@ public:
             int row_idx = m * Vec + seq_coord;
             CUTLASS_PRAGMA_UNROLL
             for (int row = 0; row < Vec; row++, row_idx++) { // 8
-              if (col_idx > row_idx + seq_len_kv_cache + seq_len_kv - seq_len_qo) {
+              if (col_idx >
+                  row_idx + seq_len_kv_cache + seq_len_kv - seq_len_qo) {
                 // tSr(row, m, n) = ElementAccumulator{-INFINITY};
               }
             }
@@ -709,11 +730,13 @@ public:
         }
         CollectiveSoftmaxEpilogue softmax(params.softmax);
         softmax(kv_splits == 1, tSr, max_reg, sum_reg, out_reg);
-        collective_mma.template mmaPV<VSlicer>(out_reg, tSr,
-                                               PagedKV ? gV_cache(_, _, kv_splits_cache - 1) : gV(_, _, kv_splits_new - 1),
-                                               out_reg, mainloop_params, PagedKV); // PagedKV seq_len_kv_new = 0, all KV is kv_cache
+        collective_mma.template mmaPV<VSlicer>(
+            out_reg, tSr,
+            PagedKV ? gV_cache(_, _, kv_splits_cache - 1)
+                    : gV(_, _, kv_splits_new - 1),
+            out_reg, mainloop_params,
+            PagedKV); // PagedKV seq_len_kv_new = 0, all KV is kv_cache
       }
-
 
       // Epilogue
       auto epilogue_params =
