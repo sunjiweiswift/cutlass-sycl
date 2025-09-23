@@ -376,6 +376,15 @@ bool verify(ProblemShapeType problem_size, Options options) {
             }
           }
 
+          for (int row = 0; row < seq_len_qo; row++)
+          {
+            for (int col = 0; col < seq_len_kv_total; col++)
+            {
+              std::cout << "host_s[" << row << "][" << col << "]=" << host_S[col + row * seq_len_kv_total] << " ";
+            }
+            std::cout << std::endl;
+          }
+
           // compute max element per row of S
           std::vector<ElementAccumulator> max_vec(seq_len_qo, ElementAccumulator{-INFINITY});
           for (int row = 0; row < seq_len_qo; row++) {
@@ -411,7 +420,7 @@ bool verify(ProblemShapeType problem_size, Options options) {
             int col_ref = seq_len_kv_cache + seq_len_kv - seq_len_qo;
             for (int col = 0; col < seq_len_kv_total; col++, idx++) {
               if (options.is_causal && row < discard_seq_coord) {
-                host_S[idx] = 0;
+                // host_S[idx] = 0;
               } else if (options.is_local_mask && (col < cute::max(0, col_ref + row - options.window_left) 
                     || col > cute::min(seq_len_kv_total, col_ref + row + options.window_right))) {
                 host_S[idx] = 0;

@@ -321,12 +321,12 @@ public:
       auto discard_seq_coord = seq_len_qo - offset;    // 1024
       auto full_tile_offset = seq_len_kv - offset;     // 0
 
-      const int seq_len =
-          CausalMask
-              ? full_tile_offset +
-                    cute::min(seq_len_kv, seq_coord - discard_seq_coord) +
-                    QK_SG_M
-              : seq_len_kv;
+      const int seq_len = seq_len_kv;
+          // CausalMask
+          //     ? full_tile_offset +
+          //           cute::min(seq_len_kv, seq_coord - discard_seq_coord) +
+          //           QK_SG_M
+          //     : seq_len_kv;
 
       const int kv_splits_new = cute::ceil_div(seq_len, QK_BLK_N);
       const int kv_splits_cache = cute::ceil_div(seq_len_kv_cache, QK_BLK_N);
@@ -334,9 +334,9 @@ public:
 
       int tiles_per_page = params.mainloop.page_size / QK_BLK_N;
 
-      if (CausalMask && seq_coord < discard_seq_coord) { // 1024 =0
-        continue;
-      }
+      // if (CausalMask && seq_coord < discard_seq_coord) { // 1024 =0
+      //  continue;
+      // }
 
       Tensor mQ_mkl = cute::get_xe_tensor(
           make_shape(seq_len_qo, head_size_qk, 1)); //(m,k,l)
@@ -462,7 +462,7 @@ public:
       for (int split = 0; split < kv_splits - static_cast<int>(CausalMask); split++) {
         barrier_arrive(barrier_scope);
 
-        bool is_KV_cache = split < kv_splits_cache;
+        bool is_KV_cache = PagedKV ? true : split < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         // 1) Load KV (performed inside mmaQK)
         auto gK_ = is_KV_cache ? gK_cache(_, _, cached_nblock, _)
                                : gK(_, _, split - kv_splits_cache, _);
@@ -538,9 +538,9 @@ public:
           prefetch(tiled_prefetch_v_, pVgV_(_, i, _, v_prefetch_idx));
         }
         int next_cached_nblock = split + 1;
-        bool is_next_KV_cache = next_cached_nblock < kv_splits_cache;
+        // bool is_next_KV_cache = PagedKV? true : next_cached_nblock < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         if constexpr (PagedKV) {
-          if (is_next_KV_cache) {
+          // if (is_next_KV_cache) {
             int curr_batch_pages = ceil_div(seq_len_kv_cache, mainloop_params.page_size);
             int next_page_logical_idx =
                 next_cached_nblock * QK_BLK_N / params.mainloop.page_size;
@@ -563,7 +563,7 @@ public:
                   tiles_per_page; // push idx out of bounds to respect the
                                   // boundary between batches
             }
-          }
+          // }
         }
 
         // 4) Fused softmax
@@ -580,7 +580,7 @@ public:
           prefetch(tiled_prefetch_q, pQgQ(_, _, _, i));
         }
 
-        is_KV_cache = is_next_KV_cache;
+        is_KV_cache = PagedKV? true : next_cached_nblock < kv_splits_cache; // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         cached_nblock = next_cached_nblock;
         // Prefetch the next K tile
         // there is no need to gaurd it with if statememt as prefetch will
@@ -616,18 +616,20 @@ public:
             Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{});
         clear(tSr);
         // 3) Perform GEMM S = Q*K
-        collective_mma.mmaQK(tSr, gQ, gK(_, _, kv_splits_new - 1, _), tSr,
+
+        collective_mma.mmaQK(tSr, gQ, PagedKV ? gK_cache(_, _, kv_splits_cache - 1, _) : gK(_, _, kv_splits_new - 1, _), tSr,
                              ceil_div(head_size_qk, QK_BLK_K), mainloop_params,
-                             false);
+                             PagedKV); // PagedKV seq_len_kv_new = 0, all KV is kv_cache
         // we only need one block ahead, there is enough gap to prefetch it
         // while doing softmax. because the gap between the two MMA is big,
         // prefetching it the same way as cutlass K matrix does not make sense
-        for (int i = 0; i < size<1>(pVgV); i++) {
-          prefetch(tiled_prefetch_v, pVgV(_, i, _, kv_splits_new - 1));
+        auto &pVgV_ = PagedKV ? pVgV_cache : pVgV;
+        for (int i = 0; i < size<1>(pVgV_); i++) {
+          // prefetch(tiled_prefetch_v, pVgV_(_, i, _, PagedKV ? kv_splits_cache - 1 : kv_splits_new - 1));
         }
         // mask the elements of each tile where j > i
         const int item_id = thread_idx % SubgroupSize;
-        int col_idx = item_id + (kv_splits_new - 1) * QK_BLK_N;
+        int col_idx = item_id + max(0, (kv_splits_new - 1)) * QK_BLK_N;
         CUTLASS_PRAGMA_UNROLL
         for (int n = 0; n < FragsN;
              n++, col_idx += get<1>(MmaAtomShape())) { // 4
@@ -636,18 +638,20 @@ public:
             int row_idx = m * Vec + seq_coord;
             CUTLASS_PRAGMA_UNROLL
             for (int row = 0; row < Vec; row++, row_idx++) { // 8
-              if (col_idx - full_tile_offset > row_idx - discard_seq_coord) {
+              if (col_idx > row_idx + seq_len_kv_cache + seq_len_kv - seq_len_qo) {
                 tSr(row, m, n) = ElementAccumulator{-INFINITY};
               }
             }
           }
         }
-
+        if (thread(0, 0)) {
+          print_tensor(tSr);
+        }
         CollectiveSoftmaxEpilogue softmax(params.softmax);
-        softmax((kv_splits - 1) == 0, tSr, max_reg, sum_reg, out_reg);
+        softmax(kv_splits == 1, tSr, max_reg, sum_reg, out_reg);
         collective_mma.template mmaPV<VSlicer>(out_reg, tSr,
-                                               gV(_, _, kv_splits_new - 1),
-                                               out_reg, mainloop_params, false);
+                                               PagedKV ? gV_cache(_, _, kv_splits_cache - 1) : gV(_, _, kv_splits_new - 1),
+                                               out_reg, mainloop_params, PagedKV); // PagedKV seq_len_kv_new = 0, all KV is kv_cache
       }
 
 
