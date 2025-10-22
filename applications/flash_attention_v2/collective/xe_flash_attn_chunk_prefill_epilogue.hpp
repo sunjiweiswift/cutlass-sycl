@@ -48,20 +48,22 @@ namespace collective {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <class DispatchPolicy, class MMAOperation_, class TileShapeOutput_, class SubgroupLayout_, class... Args> class  FlashChunkPrefillEpilogue {
+template <bool Sink_, class DispatchPolicy, class MMAOperation_, class TileShapeOutput_, class SubgroupLayout_, class... Args> class  FlashChunkPrefillEpilogue {
   static_assert(cutlass::detail::dependent_false<DispatchPolicy>, "Could not find an epilogue specialization.");
 };
 
-template <class MMAOperation_, class TileShapeOutput_, class SubgroupLayout_, class ElementCompute_, class ElementO_, class StrideO_, class ElementLSE_, class CopyOpO_>
-class FlashChunkPrefillEpilogue<epilogue::IntelXeXMX16,  MMAOperation_, TileShapeOutput_, SubgroupLayout_, ElementCompute_, ElementO_, StrideO_, ElementLSE_, CopyOpO_> {
+template <bool Sink_, class MMAOperation_, class TileShapeOutput_, class SubgroupLayout_, class ElementCompute_, class ElementO_, class StrideO_, class ElementLSE_, class ElementSink_, class CopyOpO_>
+class FlashChunkPrefillEpilogue<Sink_, epilogue::IntelXeXMX16,  MMAOperation_, TileShapeOutput_, SubgroupLayout_, ElementCompute_, ElementO_, StrideO_, ElementLSE_, ElementSink_, CopyOpO_> {
 public:
   //
   // Type Aliases
   //
+  static constexpr bool Sink = Sink_;
   using DispatchPolicy = epilogue::IntelXeXMX16;
   using ElementO = ElementO_;
   using StrideO = StrideO_;
   using ElementLSE = ElementLSE_;
+  using ElementSink = ElementSink_;
   using CopyOpO = CopyOpO_;
   using SubgroupLayout = SubgroupLayout_;
   using TileShapeOutput = TileShapeOutput_;
@@ -103,11 +105,13 @@ public:
   struct Arguments {
     ElementO const *ptr_O;
     StrideO dO;
+    ElementSink const* ptr_sink;
   };
 
   // Device side epilogue params
   struct Params {
     XE_Copy_O xe_store_o;
+    ElementSink const* ptr_sink;
   };
 
   //
@@ -133,7 +137,7 @@ public:
                                                   args.dO));
     XE_Copy_O xe_store_o{XE_Copy_O{}.with(tensorO)};
     return {
-        xe_store_o,
+        xe_store_o, args.ptr_sink
     };
   }
 
@@ -157,9 +161,9 @@ public:
   CUTLASS_HOST_DEVICE
   FlashChunkPrefillEpilogue(Params const &params_, TensorStorage const &) : params(params_) {}
 
-  template <class ProblemShape, class SequenceLengthShape, class TileCoord, class FragOut, class FragMax, class FragSum>
+  template <class ProblemShape, class SequenceLengthShape, class TileCoord, class FragOut, class FragMax, class FragSum, class FragSink>
   CUTLASS_DEVICE void operator()(ProblemShape problem_shape, SequenceLengthShape sequence_length_shape, TileCoord tile_coord, FragOut &out,
-                                 FragMax const &max, FragSum &sum) {
+                                 FragMax const& max, FragSum &sum, [[maybe_unused]] FragSink const& sink) {
 
     using namespace cute;
 
@@ -178,8 +182,12 @@ public:
     for (int y = 0; y < FragsM; y++) {
       CUTLASS_PRAGMA_UNROLL
       for (int x = 0; x < Vec; x++) {
-        int indx = y * Vec + x;
-        auto cur_sum = reduce_over_group(sg, sum(indx), sycl::plus<>());
+        int index = y * Vec + x;
+        auto cur_sum = reduce_over_group(sg, sum(index), sycl::plus<>());
+        if constexpr (Sink) {
+          auto max_scale_bcast = group_broadcast(sg, max, index);
+          cur_sum += sycl::native::exp2(static_cast<ElementAccumulator>(sink) - max_scale_bcast);
+        }
         auto cur_scale = (cur_sum == 0.f || cur_sum != cur_sum) ? 1.0f : sycl::native::recip(cur_sum);
         CUTLASS_PRAGMA_UNROLL
         for (int z = 0; z < FragsN; z++) {
@@ -239,7 +247,7 @@ public:
     StrideO stride_o = cutlass::make_cute_packed_stride(StrideO{}, shape_o);
     auto tensorO = make_tensor(make_gmem_ptr(base_ptr + offset_o), make_layout(shape_o, stride_o));
     XE_Copy_O xe_store_o{XE_Copy_O{}.with(tensorO)};
-    return Params{xe_store_o};
+    return Params{xe_store_o, params.ptr_sink};
   }
 
 private:
