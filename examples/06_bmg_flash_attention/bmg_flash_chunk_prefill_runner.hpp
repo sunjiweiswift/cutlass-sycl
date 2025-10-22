@@ -61,6 +61,7 @@ struct Options {
   bool is_causal;
   bool is_local_mask;
   bool varlen = false;
+  bool use_sink = false;
   bool use_paged_kv = false;
   std::string scheduler;
 
@@ -68,7 +69,7 @@ struct Options {
   float softmax_scale;
 
   Options()
-      : help(false), error(false), is_causal(false), is_local_mask(false), varlen(false), use_paged_kv(false), batch(32), num_heads_q(16), num_heads_kv(16), seq_len_qo(512), head_size_qk(128),
+      : help(false), error(false), is_causal(false), is_local_mask(false), varlen(false), use_sink(false), use_paged_kv(false), batch(32), num_heads_q(16), num_heads_kv(16), seq_len_qo(512), head_size_qk(128),
         seq_len_kv(512), seq_len_kv_cache(512), page_size(128), head_size_vo(128), iterations(100), window_left(-1), window_right(-1), softmax_scale(1.f), scheduler("Individual") {}
 
   // Parses the command line
@@ -86,6 +87,9 @@ struct Options {
 
     if (cmd.check_cmd_line_flag("varlen")) {
       varlen = true;
+    }
+    if (cmd.check_cmd_line_flag("use_sink")) {
+      use_sink = true;
     }
 
     cmd.get_cmd_line_argument("scheduler", scheduler, std::string("Individual"));
@@ -128,6 +132,7 @@ struct Options {
         << "Options:\n\n"
         << "  --help                      If specified, displays this usage statement\n\n"
         << "  --is_causal                 Apply Causal Mask to the output of first Matmul\n"
+        << "  --use_sink                  Apply Attention Sink\n"
         << "  --window_left=<int>         Set the left borders of the window, If set to -1, calculate all seq_len\n"
         << "  --window_right=<int>        Set the left borders of the window, If set to -1, calculate all seq_len\n"
         << "  --varlen                    Enable variable sequence length\n"
@@ -166,6 +171,7 @@ template <class FMHAChunkPrefillKernel, bool isVarLen> struct ExampleRunner {
   using ElementQ = typename FMHAChunkPrefillKernel::ElementQ;
   using ElementK = typename FMHAChunkPrefillKernel::ElementK;
   using ElementV = typename FMHAChunkPrefillKernel::ElementV;
+  using ElementSink = typename FMHAChunkPrefillKernel::ElementSink;
   using ElementAcc = typename FMHAChunkPrefillKernel::ElementAccumulator;
 
   using CollectiveEpilogue = typename FMHAChunkPrefillKernel::CollectiveEpilogue;
@@ -193,6 +199,7 @@ template <class FMHAChunkPrefillKernel, bool isVarLen> struct ExampleRunner {
   cutlass::DeviceAllocation<ElementV> block_V;
   cutlass::DeviceAllocation<ElementK> block_K_cache;
   cutlass::DeviceAllocation<ElementV> block_V_cache;
+  cutlass::DeviceAllocation<ElementSink> block_Sink;
   cutlass::DeviceAllocation<ElementOutput> block_O;
   cutlass::DeviceAllocation<ElementOutput> block_ref_O;
 
@@ -216,6 +223,13 @@ template <class FMHAChunkPrefillKernel, bool isVarLen> struct ExampleRunner {
 
 bool verify(ProblemShapeType problem_size, Options options) {
     std::vector<ElementOutput> host_O(block_ref_O.size());
+    std::vector<ElementSink> host_Sink;
+
+    if (options.use_sink) {
+      host_Sink.resize(block_Sink.size());
+      compat::memcpy<ElementSink>(host_Sink.data(), block_Sink.get(), host_Sink.size());
+      compat::wait();
+    }
     if constexpr (isVarLen) {
       int max_seq_len_q = static_cast<int>(get<3>(problem_size));
       int max_seq_len_kv = static_cast<int>(get<4>(problem_size));
@@ -382,6 +396,10 @@ bool verify(ProblemShapeType problem_size, Options options) {
             int idx = row * seq_len_kv_total;
             int max_idx = row;
             max_vec[max_idx] = host_S[idx++];
+            if (options.use_sink) {
+              ElementAccumulator sink_val = static_cast<ElementAccumulator>(host_Sink[q_group * q_group_size + q_head]);
+              max_vec[max_idx] = max(sink_val, max_vec[max_idx]);
+            }
             for (int col = 1; col < seq_len_kv_total; col++, idx++) {
               if (max_vec[max_idx] < host_S[idx])
                 max_vec[max_idx] = host_S[idx];
@@ -404,7 +422,12 @@ bool verify(ProblemShapeType problem_size, Options options) {
             for (int col = 0; col < seq_len_kv_total; col++, idx++) {
               sum_vec[sum_idx] += host_S[idx];
             }
-  
+            if (options.use_sink) {
+              ElementAccumulator sink_val = static_cast<ElementAccumulator>(host_Sink[q_group * q_group_size + q_head]);
+              auto exp_sink = expf(sink_val - max_vec[row]);
+              sum_vec[sum_idx] += exp_sink;
+            }
+
             // scale each row with the sum to compute softmax
             idx = row * seq_len_kv_total;
             sum_idx = row;
@@ -591,6 +614,9 @@ bool verify(ProblemShapeType problem_size, Options options) {
     block_Q.reset(batch * num_heads_q * seq_len_qo * head_size_qk);
     block_K.reset(batch * num_heads_kv * seq_len_kv * head_size_qk);
     block_V.reset(batch * num_heads_kv * seq_len_kv * head_size_vo);
+    if (options.use_sink) {
+      block_Sink.reset(num_heads_q);
+    }
     if (!options.use_paged_kv) {
       block_K_cache.reset(batch * num_heads_kv * seq_len_kv_cache * head_size_qk);
       block_V_cache.reset(batch * num_heads_kv * seq_len_kv_cache * head_size_vo);
@@ -631,10 +657,44 @@ bool verify(ProblemShapeType problem_size, Options options) {
       block_K_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_qk);
       block_V_cache.reset(num_pages * paged_kv_cache.page_size * num_heads_kv * head_size_vo);
     }
+    // std::vector<ElementQ> host_Q(block_Q.size());
+    // std::vector<ElementK> host_K(block_K.size());
+    // std::vector<ElementV> host_V(block_V.size());
+    // std::vector<ElementK> host_K_cache(block_K_cache.size());
+    // std::vector<ElementV> host_V_cache(block_V_cache.size());
+    // std::vector<ElementSink> host_Sink(block_Sink.size());
 
+    // for (size_t i = 0; i < host_Q.size(); i++) {
+    //   host_Q[i] = static_cast<ElementQ>(1.f);//static_cast<ElementQ>(rand_r(&seed) % 255 / static_cast<float>(255));
+    // }
+    // for (size_t i = 0; i < host_K.size(); i++) {
+    //   host_K[i] = static_cast<ElementK>(1.f);//static_cast<ElementK>(rand_r(&seed + 1) % 255 / static_cast<float>(255));
+    // }
+    // for (size_t i = 0; i < host_V.size(); i++) {
+    //   host_V[i] = static_cast<ElementV>(1.f);// static_cast<ElementV>(rand_r(&seed + 2) % 255 / static_cast<float>(255));
+    // }
+    // for (size_t i = 0; i < host_K_cache.size(); i++) {
+    //   host_K_cache[i] = static_cast<ElementK>(1.f);
+    // }
+    // for (size_t i = 0; i < host_V_cache.size(); i++) {
+    //   host_V_cache[i] = static_cast<ElementV>(1.f);//static_cast<ElementV>(rand_r(&seed + 4) % 255 / static_cast<float>(255));
+    // }
+    // for (size_t i = 0; i < host_Sink.size(); i++) {
+    //   host_Sink[i] = static_cast<ElementSink>(1000.f);//static_cast<ElementV>(rand_r(&seed + 5) % 255 / static_cast<float>(255));
+    // }
+    // compat::memcpy<ElementQ>(block_Q.get(), host_Q.data(), block_Q.size());
+    // compat::memcpy<ElementV>(block_K.get(), host_K.data(), block_K.size());
+    // compat::memcpy<ElementV>(block_V.get(), host_V.data(), block_V.size());
+    // compat::memcpy<ElementK>(block_K_cache.get(), host_K_cache.data(), block_K_cache.size());
+    // compat::memcpy<ElementV>(block_V_cache.get(), host_V_cache.data(), block_V_cache.size());
+    // if (options.use_sink) {
+    //   compat::memcpy<ElementSink>(block_Sink.get(), host_Sink.data(), block_Sink.size());
+    // }
+    // compat::wait();
     initialize_block(block_Q, seed + 2023);
     initialize_block(block_K, seed + 2022);
     initialize_block(block_V, seed + 2021);
+    initialize_block(block_Sink, seed + 2021);
     initialize_block(block_K_cache, seed + 2024);
     initialize_block(block_V_cache, seed + 2025);
 
@@ -725,7 +785,7 @@ bool verify(ProblemShapeType problem_size, Options options) {
         options.window_left,
         options.window_right},
         {options.softmax_scale},
-        {block_O.get(), stride_O},
+        {block_O.get(), stride_O, block_Sink.get()},
         hw_info};
 
     // Define device-global scratch memory
@@ -812,9 +872,10 @@ template <bool Causal,
           typename ElementAccumulator = float,
           typename ElementComputeEpilogue = float,
           typename ElementOutput = bfloat16_t,
+          typename ElementSink = bfloat16_t,
           typename GmemTiledCopyStore = XE_2D_U16x8x16_ST_N> struct FMHAConfig {
 
-  template <bool isVarLen, bool PagedKV, class Scheduler>
+  template <bool isVarLen, bool PagedKV, bool Sink,class Scheduler>
   static int run(const Options &options) {
     //
     // Run examples
@@ -827,8 +888,7 @@ template <bool Causal,
     using GEMMDispatchPolicy = cutlass::gemm::MainloopIntelXeXMX16<PipelineStages>;
     using EpilogueDispatchPolicy = cutlass::epilogue::IntelXeXMX16;
     using CollectiveEpilogue = cutlass::flash_attention::collective::FlashChunkPrefillEpilogue<
-        EpilogueDispatchPolicy, MMAOperation, TileShapeOutput, SubgroupLayout, ElementComputeEpilogue, ElementOutput, cutlass::gemm::TagToStrideC_t<LayoutO>, ElementOutput,
-        GmemTiledCopyStore>;
+        Sink, EpilogueDispatchPolicy, MMAOperation, TileShapeOutput, SubgroupLayout, ElementComputeEpilogue, ElementOutput, cutlass::gemm::TagToStrideC_t<LayoutO>, ElementOutput, ElementSink, GmemTiledCopyStore>;
     using CollectiveSoftmaxEpilogue = cutlass::flash_attention::collective::FlashChunkPrefillSoftmaxEpilogue<Causal, LocalMask, EpilogueDispatchPolicy, ElementAccumulator>;
 
     using ProblemShapeRegular = cute::tuple<int, int, int, int, int, int, int, int>;
@@ -857,14 +917,34 @@ template <bool Causal,
   }
 
   static int run(const Options &options) {
-    if (options.use_paged_kv && !options.varlen) {
-      return run<false, true, cutlass::flash_attention::IndividualScheduler>(options);
-    } else if(!options.use_paged_kv && options.varlen) {
-      return run<true, false, cutlass::flash_attention::IndividualScheduler>(options);
-    } else if(!options.use_paged_kv && !options.varlen) {
-      return run<false, false, cutlass::flash_attention::IndividualScheduler>(options);
-    } else {
-      return run<true, true, cutlass::flash_attention::IndividualScheduler>(options);
+    if (options.varlen) {
+      if (options.use_paged_kv) {
+        if (options.use_sink) {
+          return run<true, true, true, cutlass::flash_attention::IndividualScheduler>(options);
+        } else {
+          return run<true, true, false, cutlass::flash_attention::IndividualScheduler>(options);
+        }
+      } else { // not paged kv
+        if (options.use_sink) {
+          return run<true, false, true, cutlass::flash_attention::IndividualScheduler>(options);
+        } else {
+          return run<true, false, false, cutlass::flash_attention::IndividualScheduler>(options);
+        }
+      }
+    } else { // not varlen
+      if (options.use_paged_kv) {
+        if (options.use_sink) {
+          return run<false, true, true, cutlass::flash_attention::IndividualScheduler>(options);
+        } else {
+          return run<false, true, false, cutlass::flash_attention::IndividualScheduler>(options);
+        }
+      } else { // not paged kv
+        if (options.use_sink) {
+          return run<false, false, true, cutlass::flash_attention::IndividualScheduler>(options);
+        } else {
+          return run<false, false, false, cutlass::flash_attention::IndividualScheduler>(options);
+        }
+      }
     }
   }
 };

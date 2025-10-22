@@ -116,7 +116,7 @@ public:
       for (int z = 0; z < FragsN; z++) {
         auto base_indx = indx + (z * Vec * FragsM);
         if constexpr (LocalMask) {
-          if ((std::isinf(max_scale_bcast) && max_scale_bcast < 0) ||
+          if ((std::isinf(max_scale) && max_scale < 0) ||
              (std::isinf(frag_s(base_indx)) && frag_s(base_indx) < 0)) {
             frag_s(base_indx) = 0.f;
             // continue;
@@ -186,7 +186,7 @@ public:
         for (int z = 0; z < FragsNAcc; z++) {
           auto base_indx = indx + (z * Vec * FragsM);
           if constexpr (LocalMask) {
-            if ((std::isinf(max_scale_bcast) && max_scale_bcast < 0) ||
+            if ((std::isinf(max_scale) && max_scale < 0) ||
                 (std::isinf(frag_s(base_indx)) && frag_s(base_indx) < 0)) {
               frag_s(base_indx) = 0.f;
               // continue;
