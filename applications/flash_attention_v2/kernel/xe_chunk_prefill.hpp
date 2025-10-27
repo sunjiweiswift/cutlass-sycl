@@ -661,10 +661,8 @@ public:
       CollectiveEpilogue epilogue{epilogue_params, shared_storage.epilogue};
       auto blk_coord_mnkl = make_coord(blk_m_coord, blk_n_coord, _, 0);
       if constexpr (Sink) {
-        constexpr double kLog2e = 1.4426950408889634074;  // log_2(e) = M_LOG2E
-        // epilogue(params.problem_shape, sequence_length_shape, blk_coord_mnkl, out_reg, max_reg * params.softmax.scale, sum_reg, static_cast<ElementSink>(params.epilogue.ptr_sink[q_head_coord] * kLog2e));
         ElementAccumulator max_scale{max_reg * params.softmax.scale};
-        epilogue(params.problem_shape, sequence_length_shape, blk_coord_mnkl, out_reg, max_scale, sum_reg, static_cast<ElementSink>(params.epilogue.ptr_sink[q_head_coord] * kLog2e));
+        epilogue(params.problem_shape, sequence_length_shape, blk_coord_mnkl, out_reg, max_scale, sum_reg, static_cast<ElementSink>(params.epilogue.ptr_sink[q_head_coord]));
       } else {
         epilogue(params.problem_shape, sequence_length_shape, blk_coord_mnkl, out_reg, max_reg, sum_reg, 0);
       }
