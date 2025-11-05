@@ -41,7 +41,6 @@
 #include "cutlass/util/sycl_event_manager.hpp"
 #include <cute/tensor.hpp>
 #include <random>
-#include <iostream>
 
 #include "helper.h"
 #include "cutlass/util/command_line.h"
@@ -487,7 +486,7 @@ template <class FMHAKernel> struct ExampleRunner {
     cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
 
     if (!FMHAKernel::can_implement(arguments)) {
-      std::cout << "Invalid Problem Size: " << options.batch << 'x' << options.num_heads_q << 'x' <<
+      std::cerr << "Invalid Problem Size: " << options.batch << 'x' << options.num_heads_q << 'x' <<
         options.seq_len_qo << 'x' << options.seq_len_kv << 'x' << options.head_size_qk << 'x'  << options.head_size_vo
         << (options.is_causal ? "xCausal" : "xNonCausal") << std::endl;
       return cutlass::Status::kErrorInvalidProblem;
