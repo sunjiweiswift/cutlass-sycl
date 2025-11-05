@@ -41,6 +41,7 @@
 #include "cutlass/util/sycl_event_manager.hpp"
 #include <cute/tensor.hpp>
 #include <random>
+#include <iostream>
 
 #include "helper.h"
 #include "cutlass/util/command_line.h"
@@ -89,6 +90,11 @@ struct Options {
 
     cmd.get_cmd_line_argument("scheduler", scheduler, std::string("Individual"));
     cmd.get_cmd_line_argument("layout", layout, std::string("NHD"));
+    if (layout != "NHD" && layout != "HND") {
+      std::cerr << "Invalid --layout option: " << layout
+                << ". Supported values are NHD and HND." << std::endl;
+      return;
+    }
 
     cmd.get_cmd_line_argument("batch", batch, 32);
     cmd.get_cmd_line_argument("num_heads_q", num_heads_q, 16);
