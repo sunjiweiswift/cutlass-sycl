@@ -402,16 +402,25 @@ template <class FMHAKernel> struct ExampleRunner {
 
     // Set up strides.
     // These lines can be adjusted to support different data layouts, as needed.
+    
+    // The shape order in the kernel is
+    // auto shape_Q = make_shape(s.seq_len_qo, s.head_size_qk, s.num_heads_q, s.batch);
+    // auto shape_K = make_shape(s.seq_len_kv, s.head_size_qk, s.num_heads_kv, s.batch);
+    // auto shape_V = make_shape(s.head_size_vo, s.seq_len_kv, s.num_heads_kv, s.batch);
+    // auto shape_O = make_shape(s.seq_len_qo, s.head_size_vo, s.num_heads_kv, s.batch);
+    // The stride needs to match the shape.
     if (options.layout == "NHD") {
+      // {batch, seq_len, num_heads, head_dim}
       stride_Q = cutlass::make_stride(num_heads_q * head_size_qk, Int<1>{}, head_size_qk, head_size_qk * num_heads_q * seq_len_qo);
       stride_K = cutlass::make_stride(num_heads_kv * head_size_qk, Int<1>{}, head_size_qk, head_size_qk * num_heads_kv * seq_len_kv);
       stride_V = cutlass::make_stride(Int<1>{}, num_heads_kv * head_size_vo, head_size_vo, head_size_vo * num_heads_kv * seq_len_kv);
       stride_O = cutlass::make_stride(num_heads_q * head_size_vo, Int<1>{}, head_size_vo, head_size_vo * num_heads_q * seq_len_qo);
     } else if (options.layout == "HND") {
-      stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, cute::make_shape(seq_len_qo, head_size_qk, num_heads_q, batch));
-      stride_K = cutlass::make_cute_packed_stride(StrideK{}, cute::make_shape(seq_len_kv, head_size_qk, num_heads_kv, batch));
-      stride_V = cutlass::make_cute_packed_stride(StrideV{}, cute::make_shape(head_size_vo, seq_len_kv, num_heads_kv, batch));
-      stride_O = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch));
+      // {batch, num_heads, seq_len, head_dim}
+      stride_Q = cutlass::make_stride(head_size_qk, Int<1>{}, head_size_qk * seq_len_qo, head_size_qk * num_heads_q * seq_len_qo);
+      stride_K = cutlass::make_stride(head_size_qk, Int<1>{}, head_size_qk * seq_len_kv, head_size_qk * num_heads_kv * seq_len_kv);
+      stride_V = cutlass::make_stride(Int<1>{}, head_size_vo, head_size_vo * seq_len_kv, head_size_vo * num_heads_kv * seq_len_kv);
+      stride_O = cutlass::make_stride(head_size_vo, Int<1>{}, head_size_vo * seq_len_qo, head_size_vo * num_heads_q * seq_len_qo);
     }
     block_Q.reset(static_cast<std::size_t>(batch) * seq_len_qo * num_heads_q * head_size_qk);
     block_K.reset(static_cast<std::size_t>(batch) * seq_len_kv * num_heads_kv * head_size_qk);
