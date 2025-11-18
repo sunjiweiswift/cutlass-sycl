@@ -85,7 +85,10 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using TiledMMAPV = TiledMMAPV_;
   using TileShapeQK = decltype(TiledMMAQK{}.tile_mnk());
   using TileShapePV = decltype(TiledMMAPV{}.tile_mnk());
-  static constexpr int VTiles = VTiles_;
+  static constexpr int VTiles = VTiles_; //constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
+  using TileShapeOutput = decltype(make_shape(get<0>(TileShapePV{}), get<1>(TileShapePV{}) * VTiles_));
+  static constexpr int HeadSizeVO = VTiles * get<1>(TileShapePV{});
+  static constexpr int QGroupSize = 2;
 
   using SGPerWG = decltype(product(take<1,4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
 
@@ -94,6 +97,7 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using TensorV = TensorV_;
 
   using TensorQ2D = decltype(TensorQ_{}(append<rank_v<TensorQ_>>(make_coord(_,_),0)));
+  using TensorQ3D = decltype(TensorQ_{}(append<rank_v<TensorQ_>>(make_coord(_,_,_),0)));
   using TensorK2D = decltype(TensorK_{}(append<rank_v<TensorK_>>(make_coord(_,_),0)));
   using TensorV2D = decltype(TensorV_{}(append<rank_v<TensorV_>>(make_coord(_,_),0)));
 
@@ -119,6 +123,8 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
   using FragS = FragC<TiledMMAQK>;
   using FragSRow = decltype(reduce<1>(FragS{}, sycl::plus<void>{}));
+  using ElementQ = typename TiledMMAQK::ValTypeA;
+  using ElementK = typename TiledMMAQK::ValTypeB;
   using ElementS = typename TiledMMAQK::ValTypeD;
 
   using SingleFragA = FragC<TiledMMAPV>;                          // (atom val,q',v')
@@ -137,15 +143,28 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using Params = Arguments;
 
   // SLM data
-  struct SharedStorage {};
+  struct SharedStorage {
+    // Allocate shared memory for QxK tile
+    // cute::array<ElementS, QGroupSize * product(take<0, 2>(TileShapeQK{}))> s_smem;
+    // cute::array<ElementQ, QGroupSize * get<0>(TileShapeQK{}) * HeadSizeVO> q_preload; // Assum head_size_qk == head_size_vo
+    cute::array<ElementK, get<1>(TileShapeQK{}) * HeadSizeVO> k_preload;              // Assum head_size_qk == head_size_vo
 
+    cute::array<ElementS, QGroupSize * product(take<0, 2>(TileShapeQK{}))> s_slm;
+    cute::array<ElementS, QGroupSize * get<0>(TileShapeQK{})> sum_slm;
+    cute::array<ElementS, QGroupSize * get<0>(TileShapeQK{})> max_slm;
+  };
+
+private:
+  SharedStorage &shared;
+
+public:
   Params params;
 
   //
   // Methods
   //
 
-  FMHAFwdMainloop(Params const& params_, SharedStorage&) : params(params_) {}
+  FMHAFwdMainloop(Params const &params_, SharedStorage &shared_) : params(params_), shared(shared_) {}
 
   static constexpr
   Params to_underlying_arguments(Arguments const &args, void * /* workspace */) {
@@ -159,19 +178,23 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
     return true;
   }
 
-  template <typename QVCoord>
-  CUTLASS_DEVICE
-  void
-  operator()(TensorQ2D const& Q_2D,     // (q,d)
-             TensorK2D const& K_2D,     // (k,d)
-             TensorV2D const& V_2D,     // (d,k)
-             FragA          & tArA,     // Output accumulator (q,v)
-             FragARow       & tA_max,   // Softmax row-wise max accumulator
-             FragARow       & tA_sum,   // Softmax row-wise sum accumulator
-             QVCoord          blk_qv,   // WG tile indices: (Q,V)
-             int              blk_k0,   // K block range: [K0,K1)
-             int              blk_k1,
-             int              thr_id) { // Work-item ID
+  template <typename FragASLM, typename FragARowSLM, typename QVCoord>
+  CUTLASS_DEVICE void
+  operator()(TensorQ3D const &Q_3D,   // (q,d)
+             TensorK2D const &K_2D,   // (k,d)
+             TensorV2D const &V_2D,   // (d,k)
+         //  FragA         & tArA,     // Output accumulator (q,v)
+         //  FragARow      & tA_max,   // Softmax row-wise max accumulator
+         //  FragARow      & tA_sum,   // Softmax row-wise sum accumulator
+             FragASLM &tArA_slm,      // Output accumulator (q,v)
+             FragARowSLM &tA_max_slm, // Softmax row-wise max accumulator
+             FragARowSLM &tA_sum_slm, // Softmax row-wise sum accumulator
+             QVCoord blk_qv,          // WG tile indices: (Q,V)
+             int blk_k0,              // K block range: [K0,K1)
+             int blk_k1,
+             int blk_head_kv,
+             int thr_id)
+  { // Work-item ID
 
     using namespace sycl::ext::oneapi::this_work_item;
 
@@ -185,8 +208,10 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
     // Primed letters (q', k', ...) refer to atom block indices.
 
     auto tile_shape_v = make_shape(get<1>(TileShapePV{}) * C<VTiles>{}, get<2>(TileShapePV{}));
-
+    int blk_head_q_start = blk_head_kv * QGroupSize;
     /* Create proxy coordinate tensors for Q/K/P/V */
+  
+    auto Q_2D = Q_3D(_,_,0);
     Tensor cQ = make_identity_tensor(Q_2D.shape());             // (q,d)
     Tensor cK = make_identity_tensor(K_2D.shape());             // (k,d)
     Tensor cV = make_identity_tensor(V_2D.shape());             // (v,k)
@@ -228,7 +253,6 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
     auto tSrS = thr_mma_qk.partition_sg_fragment_C(cP);
     auto tArP = thr_mma_pv.partition_sg_fragment_A(cP);
-
     auto tVrV = thr_copy_v.partition_sg_fragment_D(gV_split(_,_,0,0));
     auto tArV = thr_mma_pv.partition_sg_fragment_B(gV_split(_,_,0,0));
 
@@ -260,70 +284,139 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
         }
       }
 
-      clear(tArA);
-      fill(tA_max, cutlass::platform::numeric_limits<ElementA>::lowest());
-      clear(tA_sum);
+      // clear(tArA);
+      // fill(tA_max, cutlass::platform::numeric_limits<ElementA>::lowest());
+      // clear(tA_sum);
     }
 
     /* Check if */
     bool check_remainder_k = (shape<0>(K_2D) % get<1>(TileShapeQK{}) != 0);
+    
+    // auto tSrQPreLoad = make_tensor(make_smem_ptr<ElementQ>(&shared.q_preload), make_shape(size(tSrQ.layout()), size<4>(tKgK), intel::sg_size * SGPerWG{}, QGroupSize));
+    auto tSrKPreLoad = make_tensor(make_smem_ptr<ElementK>(&shared.k_preload), make_shape(size(tSrK.layout()), intel::sg_size, size<4>(tKgK)));
 
+    // Preload All Q into SLM
+    // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+    // for (int Q = 0; Q < QGroupSize; Q++) {
+    //   Q_2D = Q_3D(_,_,blk_head_q_start+Q);
+    //   TiledCopyQ copy_q{Q_2D};
+    //   for (int D = 0; D < size<4>(tKgK); D++) {
+    //     copy(copy_q, tQgQ(_,_,_,D), tQrQ);
+    //     reorder(tQrQ, tSrQ);
+    //     for (int i = 0; i < tSrQ.size(); i++) {
+    //       tSrQPreLoad(i, D, thr_id, Q) = tSrQ(i);
+    //     }
+    //     // copy_block_r2s(tSrQ, tSrQPreLoad(_,D,thr_id,Q));
+    //   }
+    // }
+    // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+    auto sg = compat::get_nd_item<1>().get_sub_group();
     /* Main loop, blocked in k. */
     for (int K = blk_k0; K < blk_k1; K++) {
       /* Split barrier to keep threads together */
-      barrier_arrive(ScopeWorkgroup);
-
+      // barrier_arrive(ScopeWorkgroup);
+      // Preload K into SLM
+      barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+      if (thr_id < intel::sg_size) {
+      // if (sg.get_group_id()[0] == 0) {
+        for (int D = 0; D < size<4>(tKgK); D++) { // Head_size
+          copy(copy_k, tKgK(_,_,_,K,D), tKrK);
+          reorder(tKrK, tSrK);
+          // copy_block_r2s(tSrK, tSrKPreLoad(_,D,thr_id));
+          for (int i = 0; i < tSrK.size(); i++) {
+            tSrKPreLoad(i, thr_id, D) = tSrK(i);
+          }
+        }
+      }
+      barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
       /* GEMM 1: S = K * Q */
-      clear(tSrS);    /* TODO: fuse w/ initial gemm call */
-      for (int D = 0; D < size<4>(tKgK); D++) {
-        copy(copy_q, tQgQ(_,_,_,D),   tQrQ);
-        copy(copy_k, tKgK(_,_,_,K,D), tKrK);
-
-        reorder(tQrQ, tSrQ);
-        reorder(tKrK, tSrK);
-
-        cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
-      }
-
-      /* V prefetch for GEMM 2 */
-      prefetch(prefetch_v, pVgV(_,_,_,K));
-
-      /* k masking for remainder tiles */
-      if (check_remainder_k && K == blk_k1 - 1) {
-        FragSRow k_rem_mask;
-        int k = get<0>(tKgK(0,0,0,K,0)) + get_sub_group().get_local_id()[0];
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
-          k_rem_mask(i) = (k < shape<0>(K_2D)) ? ElementS(sycl::nan(0u)) : ElementS(-INFINITY);
+      for (int Q = 0; Q < QGroupSize; Q++) {  // QGroupSize
+        FragA tArA;
+        FragARow tA_max;
+        FragARow tA_sum;
+        clear(tSrS);    /* TODO: fuse w/ initial gemm call */
+        // Load from SLM
+        for (int i = 0; i < tArA.size(); i++) {
+          tArA(i) = tArA_slm(i, thr_id, Q);
         }
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < tSrS.size(); i++) {
-          tSrS(i) = sycl::fmin(tSrS(i), broadcast<1>(k_rem_mask, tSrS, i));
+        for (int i = 0; i < tA_max.size(); i++) {
+          tA_max(i) = tA_max_slm(i, thr_id, Q);
         }
-      }
+        for (int i = 0; i < tA_sum.size(); i++) {
+          tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+        }
 
-      /* TODO: causal masking */
-      static_assert(!CausalMask, "Causal mask unimplemented");
-
-      /* Apply softmax and scaling */
-      softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
-      reorder(tSrS, tArP);
-
-      /* GEMM 2: A += P * V, split in v dimension */
-      CUTLASS_PRAGMA_UNROLL
-      for (int VV = 0; VV < VTiles; VV++) {
-        copy(copy_v, tVgV(_,_,_,VV,K), tVrV);
-        reorder(tVrV, tArV);
-        cute::gemm(mma_pv, tArP, tArV, tArA(_,_,_,VV));
-      }
-
+        Q_2D = Q_3D(_,_,blk_head_q_start+Q);
+        TiledCopyQ copy_q{Q_2D};
+        for (int D = 0; D < size<4>(tKgK); D++) { // head_size/dim 64 / 32
+          copy(copy_q, tQgQ(_,_,_,D), tQrQ);
+          reorder(tQrQ, tSrQ);
+          // copy(copy_k, tKgK(_,_,_,K,D), tKrK);
+          // reorder(tKrK, tSrK);
+          // Load from SLM
+          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+          
+          for (int i = 0; i < tSrK.size(); i++) {
+            tSrK(i) = tSrKPreLoad(i, thr_id % intel::sg_size, D);
+          }
+          // for (int i = 0; i < tSrQ.size(); i++) {
+          //   tSrQ(i) = tSrQPreLoad(i, D, thr_id, Q);
+          // }
+          // copy_block_s2r(tSrKPreLoad(_,D,thr_id % intel::sg_size), tSrK);// 0 QGroupSize index
+          // copy_block_s2r(tSrQPreLoad(_,D,thr_id,Q), tSrQ);// 0 QGroupSize index
+          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+          cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
+        } // D
+  
+        /* V prefetch for GEMM 2 */
+        prefetch(prefetch_v, pVgV(_,_,_,K));
+        /* k masking for remainder tiles */
+        if (check_remainder_k && K == blk_k1 - 1) {
+          FragSRow k_rem_mask;
+          int k = get<0>(tKgK(0,0,0,K,0)) + get_sub_group().get_local_id()[0];
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
+            k_rem_mask(i) = (k < shape<0>(K_2D)) ? ElementS(sycl::nan(0u)) : ElementS(-INFINITY);
+          }
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < tSrS.size(); i++) {
+            tSrS(i) = sycl::fmin(tSrS(i), broadcast<1>(k_rem_mask, tSrS, i));
+          }
+        }
+        
+        /* TODO: causal masking */
+        static_assert(!CausalMask, "Causal mask unimplemented");
+     
+        /* Apply softmax and scaling */
+        softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
+        reorder(tSrS, tArP);
+        
+        /* GEMM 2: A += P * V, split in v dimension */
+        CUTLASS_PRAGMA_UNROLL
+        for (int VV = 0; VV < VTiles; VV++) {
+          copy(copy_v, tVgV(_,_,_,VV,K), tVrV);
+          reorder(tVrV, tArV);
+          cute::gemm(mma_pv, tArP, tArV, tArA(_,_,_,VV));
+        }
+        // Store to SLM
+        for (int i = 0; i < tArA.size(); i++) {
+          tArA_slm(i,thr_id,Q) = tArA(i);
+        }
+        for (int i = 0; i < tA_max.size(); i++) {
+          tA_max_slm(i,thr_id,Q) = tA_max(i) ;
+        }
+        for (int i = 0; i < tA_sum.size(); i++) {
+          tA_sum_slm(i,thr_id,Q) = tA_sum(i);
+        }
+      } // QGroupSize
       /* K prefetch */
       for (int D = 0; D < size<4>(pKgK); D++) {
         prefetch(prefetch_k, pKgK(_,_,_,K+Stages,D));
       }
 
-      barrier_wait(ScopeWorkgroup);
-    }
+      // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+      // barrier_wait(ScopeWorkgroup);
+    } // K blocks
   }
 
   // Single step of blocked softmax.

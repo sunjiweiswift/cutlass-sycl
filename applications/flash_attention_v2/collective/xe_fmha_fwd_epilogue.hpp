@@ -64,12 +64,13 @@ public:
 
   using TensorO = TensorO_;
   using TensorO2D = decltype(TensorO_{}(append<rank_v<TensorO_>>(make_coord(_,_),0)));
+  using TensorO3D = decltype(TensorO_{}(append<rank_v<TensorO_>>(make_coord(_,_,_),0)));
   using ElementO = typename TensorO_::value_type;
 
   using FragA = typename CollectiveMainloop::FragA;
   using FragARow = typename CollectiveMainloop::FragARow;
   using ElementA = typename FragA::value_type;
-
+  static constexpr int QGroupSize = 2;
   // Split k-reduced tiles between participating subgroups.
   // Assumption: the A tile is contiguous.
   using ReduceK = decltype(size<3>(typename TiledMMAPV::ThrLayoutVMNK{}));
@@ -135,50 +136,70 @@ public:
   CUTLASS_HOST_DEVICE
   FMHAFwdEpilogue(Params const&, SharedStorage& shared_) : shared(shared_) {}
 
-  template <typename QVCoord>
+  template <typename FragASLM, typename FragARowSLM, typename QVCoord>
   CUTLASS_DEVICE
   void
-  operator()(TensorO2D const& O,        // Global O tensor: (q,v)
-             FragA          & tArA,     // O accumulator:   (q,v)
-             FragARow       & tA_max,   // Softmax row-wise max accumulator
-             FragARow       & tA_sum,   // Softmax row-wise sum accumulator
-             QVCoord          blk_qv,   // WG tile indices: (q,v)
-             int              thr_id) { // Work-item ID
+  operator()(TensorO3D const& O_3D,        // Global O tensor: (q,v,h)
+            //  FragA          & tArA,     // O accumulator:   (q,v)
+            //  FragARow       & tA_max,   // Softmax row-wise max accumulator
+            //  FragARow       & tA_sum,   // Softmax row-wise sum accumulator
+             FragASLM         &tArA_slm,   // Output accumulator (q,v)
+             FragARowSLM      &tA_max_slm, // Softmax row-wise max accumulator
+             FragARowSLM      &tA_sum_slm, // Softmax row-wise sum accumulator
+             QVCoord          blk_qv,      // WG tile indices: (q,v)
+             int              blk_head_kv, // kv head index
+             int              thr_id) {    // Work-item ID
 
     using namespace cute;
     using ElementA = typename FragA::element_type;
-
-    // Reduce k-blocks of A and A_sum across WG, if needed.
-    auto [rA, rA_sum, active] = reduce_A(tArA, tA_max, tA_sum, thr_id);
-
-    /* Some subgroups may not have any work to do; if so, quit early. */
-    if (!active) return;
-
-    /* Complete softmax, dividing out sums. */
-    CUTLASS_PRAGMA_UNROLL
-    for (int i = 0; i < rA_sum.size(); i++)
+    int blk_head_q_start = blk_head_kv * QGroupSize;
+    for (int Q = 0; Q < QGroupSize; Q++) {
+      TensorO2D O_2D = O_3D(_,_,blk_head_q_start + Q);
+      FragA tArA;
+      FragARow tA_max;
+      FragARow tA_sum;
+      // Load from SLM
+      for (int i = 0; i < tArA.size(); i++) {
+        tArA(i) = tArA_slm(i, thr_id, Q);
+      }
+      for (int i = 0; i < tA_max.size(); i++) {
+        tA_max(i) = tA_max_slm(i, thr_id, Q);
+      }
+      for (int i = 0; i < tA_sum.size(); i++) {
+        tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+      }
+      // Reduce k-blocks of A and A_sum across WG, if needed.
+      auto [rA, rA_sum, active] = reduce_A(tArA, tA_max, tA_sum, thr_id);
+      
+      /* Some subgroups may not have any work to do; if so, quit early. */
+      if (!active) return;
+      
+      /* Complete softmax, dividing out sums. */
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < rA_sum.size(); i++)
       rA_sum(i) = ElementA(1) / rA_sum(i);
-
-    CUTLASS_PRAGMA_UNROLL
-    for (int i = 0; i < rA.size(); i++)
+      
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < rA.size(); i++)
       rA(i) *= broadcast<0>(rA_sum, rA, i);
-
-    /* Tile output */
-    Tensor cO = make_identity_tensor(O.shape());          // (q,v)
-    Tensor gO = local_tile(cO, TileShapeO{}, blk_qv);     // (q,v)
-
-    /* Prepare slices */
-    TiledCopyO copy_o{O};
-    auto thr_copy_o = copy_o.get_slice(thr_id);
-
-    auto tOrO = thr_copy_o.partition_sg_fragment_S(gO);
-    auto tOgO = thr_copy_o.partition_D(gO);
-
-    /* Reorder tile and write out */
-    reorder(rA, tOrO);
-    copy(copy_o, tOrO, tOgO);
+      
+      /* Tile output */
+      Tensor cO = make_identity_tensor(O_2D.shape());       // (q,v)
+      Tensor gO = local_tile(cO, TileShapeO{}, blk_qv);     // (q,v)
+      
+      /* Prepare slices */
+      TiledCopyO copy_o{O_2D};
+      auto thr_copy_o = copy_o.get_slice(thr_id);
+      
+      auto tOrO = thr_copy_o.partition_sg_fragment_S(gO);
+      auto tOgO = thr_copy_o.partition_D(gO);
+      
+      /* Reorder tile and write out */
+      reorder(rA, tOrO);
+      copy(copy_o, tOrO, tOgO);
+    }
   }
-
+    
   // Reduce k-blocks of A and A_sum across WG, if needed.
   // Note that each k block has its own scale factor based on A_max,
   //   so A/A_sum contributions need to be rescaled to match.
