@@ -293,7 +293,8 @@ public:
     bool check_remainder_k = (shape<0>(K_2D) % get<1>(TileShapeQK{}) != 0);
     
     // auto tSrQPreLoad = make_tensor(make_smem_ptr<ElementQ>(&shared.q_preload), make_shape(size(tSrQ.layout()), size<4>(tKgK), intel::sg_size * SGPerWG{}, QGroupSize));
-    auto tSrKPreLoad = make_tensor(make_smem_ptr<ElementK>(&shared.k_preload), make_shape(size(tSrK.layout()), intel::sg_size, size<4>(tKgK)));
+    // auto tSrKPreLoad = make_tensor(make_smem_ptr<ElementK>(&shared.k_preload), make_shape(size(tSrK.layout()), intel::sg_size, size<4>(tKgK)));
+    auto tSrKPreLoad = make_tensor(make_smem_ptr<ElementK>(&shared.k_preload), make_shape(size(tSrK.tv_layout()), size<4>(tKgK)));
 
     // Preload All Q into SLM
     // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
@@ -316,19 +317,27 @@ public:
       /* Split barrier to keep threads together */
       // barrier_arrive(ScopeWorkgroup);
       // Preload K into SLM
-      barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
       if (thr_id < intel::sg_size) {
-      // if (sg.get_group_id()[0] == 0) {
-        for (int D = 0; D < size<4>(tKgK); D++) { // Head_size
+        // if (sg.get_group_id()[0] == 0) {
+          for (int D = 0; D < size<4>(tKgK); D++) { // Head_size
+          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
           copy(copy_k, tKgK(_,_,_,K,D), tKrK);
           reorder(tKrK, tSrK);
-          // copy_block_r2s(tSrK, tSrKPreLoad(_,D,thr_id));
-          for (int i = 0; i < tSrK.size(); i++) {
-            tSrKPreLoad(i, thr_id, D) = tSrK(i);
-          }
+          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+          // for (int i = 0; i < tSrK.size(); i++) {
+          //   tSrKPreLoad(i, thr_id, D) = tSrK(i);
+          // }
+          copy_block_r2s(tSrK, tSrKPreLoad(_,D));
+          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
         }
       }
-      barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+      if (thread(0,0)) {
+        print("\ntSrKPreLoad\n");
+        print_tensor(tSrKPreLoad);
+        // print("\ntSrKPreLoad1\n");
+        // print_tensor(tSrKPreLoad1);
+      }
       /* GEMM 1: S = K * Q */
       for (int Q = 0; Q < QGroupSize; Q++) {  // QGroupSize
         FragA tArA;
@@ -356,13 +365,13 @@ public:
           // Load from SLM
           barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
           
-          for (int i = 0; i < tSrK.size(); i++) {
-            tSrK(i) = tSrKPreLoad(i, thr_id % intel::sg_size, D);
-          }
+          // for (int i = 0; i < tSrK.size(); i++) {
+          //   tSrK(i) = tSrKPreLoad(i, thr_id % intel::sg_size, D);
+          // }
+          copy_block_s2r(tSrKPreLoad(_,D), tSrK);// 0 QGroupSize index
           // for (int i = 0; i < tSrQ.size(); i++) {
           //   tSrQ(i) = tSrQPreLoad(i, D, thr_id, Q);
           // }
-          // copy_block_s2r(tSrKPreLoad(_,D,thr_id % intel::sg_size), tSrK);// 0 QGroupSize index
           // copy_block_s2r(tSrQPreLoad(_,D,thr_id,Q), tSrQ);// 0 QGroupSize index
           barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
           cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
