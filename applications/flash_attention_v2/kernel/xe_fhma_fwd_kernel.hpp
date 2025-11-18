@@ -87,7 +87,7 @@ public:
   using StrideV = decltype(stride(typename CollectiveMainloop::TensorV{}));
 
   using SGPerWG = typename CollectiveMainloop::SGPerWG;
-
+  static constexpr int QGroupSize = CollectiveMainloop::QGroupSize;
   using FragA = typename CollectiveMainloop::FragA;
   using FragARow = typename CollectiveMainloop::FragARow;
 
@@ -191,8 +191,6 @@ public:
 
     auto &p = params.kernel;
     ProblemShape const& s = p.shape;
-    int head_group_q = s.num_heads_q / s.num_heads_kv;
-
     int thr_id = int(ThreadIdxX());
     int sub_group_id = thr_id / intel::sg_size;
     int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})));
@@ -206,9 +204,9 @@ public:
 
     CUTLASS_PRAGMA_NO_UNROLL
     for (; tile_scheduler.is_valid(); ++tile_scheduler) {
-      auto [blk_q, blk_v, head_q, idx_b] = tile_scheduler.get_block_coord(); // (Q,V,h,b)
+      auto [blk_q, blk_v, head_kv, idx_b] = tile_scheduler.get_block_coord(); // (Q,V,h,b)
       auto blk_qv = make_coord(blk_q, blk_v);
-      int head = head_q / head_group_q;
+      int head_q = head_kv * QGroupSize;
 
       auto sequence_length_shape = get_sequence_length_shape(s, idx_b);
       auto [seq_len_qo, seq_len_kv] = sequence_length_shape;
@@ -257,18 +255,21 @@ public:
 
 
       // O accumulator types
-      FragA tArA;
-      FragARow tA_max, tA_sum;
-
+      // FragA tArA;
+      // FragARow tA_max, tA_sum;
+      auto out_slm = make_tensor(make_smem_ptr<typename FragA::element_type>(&shared_storage.mainloop.s_slm), make_shape(size(FragA{}.shape()), 16 * SGPerWG{}, QGroupSize));
+      auto max_slm = make_tensor(make_smem_ptr<typename FragARow::element_type>(&shared_storage.mainloop.max_slm), make_shape(size(FragARow{}.shape()), 16 * SGPerWG{}, QGroupSize));
+      auto sum_slm = make_tensor(make_smem_ptr<typename FragARow::element_type>(&shared_storage.mainloop.sum_slm), make_shape(size(FragARow{}.shape()), 16 * SGPerWG{}, QGroupSize));
       // Main loop
       int l_coord = is_var_len ? 0 : idx_b;
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
-      mainloop(Q(_,_,head_q,l_coord),
-               K(_,_,head,l_coord),
-               V(_,_,head,l_coord),
-               tArA, tA_max, tA_sum,
+      mainloop(Q(_,_,_,l_coord),
+               K(_,_,head_kv,l_coord),
+               V(_,_,head_kv,l_coord),
+              //  tArA, tA_max, tA_sum,
+               out_slm, max_slm, sum_slm,
                blk_qv, 0, k_blocks, k_blocks,
-               thr_id, seq_len,
+               head_kv, thr_id, seq_len,
                full_tile_offset, discard_seq_coord);
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());
@@ -276,9 +277,10 @@ public:
 
       // Epilogue
       CollectiveEpilogue epilogue{params.epilogue, shared_storage.epilogue};
-      epilogue(O(_,_,head_q,l_coord),
-               tArA, tA_max, tA_sum,
-               blk_qv, thr_id);
+      epilogue(O(_,_,_,l_coord),
+              //  tArA, tA_max, tA_sum,
+               out_slm, max_slm, sum_slm,
+               blk_qv, head_kv, thr_id);
     }
   }
 };

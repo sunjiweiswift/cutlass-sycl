@@ -88,12 +88,15 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   static constexpr int VTiles = VTiles_;
   using SubgroupLayoutQK = decltype(TiledMMAQK{}.get_atom_layout_mnk());
   using SGPerWG = decltype(product(take<1,4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
-
+  static constexpr int HeadSizeVO = VTiles * get<1>(TileShapePV{});
+  static constexpr int QGroupSize = 2;
+  
   using TensorQ = TensorQ_;
   using TensorK = TensorK_;
   using TensorV = TensorV_;
 
   using TensorQ2D = decltype(TensorQ_{}(append<rank_v<TensorQ_>>(make_coord(_,_),0)));
+  using TensorQ3D = decltype(TensorQ_{}(append<rank_v<TensorQ_>>(make_coord(_,_,_),0)));
   using TensorK2D = decltype(TensorK_{}(append<rank_v<TensorK_>>(make_coord(_,_),0)));
   using TensorV2D = decltype(TensorV_{}(append<rank_v<TensorV_>>(make_coord(_,_),0)));
 
@@ -119,6 +122,8 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
   using FragS = FragC<TiledMMAQK>;
   using FragSRow = decltype(reduce<1>(FragS{}, sycl::plus<void>{}));
+  using ElementQ = typename TiledMMAQK::ValTypeA;
+  using ElementK = typename TiledMMAQK::ValTypeB;
   using ElementS = typename TiledMMAQK::ValTypeD;
 
   using SingleFragA = FragC<TiledMMAPV>;                          // (atom val,q',v')
@@ -137,15 +142,28 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using Params = Arguments;
 
   // SLM data
-  struct SharedStorage {};
+  struct SharedStorage {
+    // Allocate shared memory for QxK tile
+    // cute::array<ElementS, QGroupSize * product(take<0, 2>(TileShapeQK{}))> s_smem;
+    // cute::array<ElementQ, QGroupSize * get<0>(TileShapeQK{}) * HeadSizeVO> q_preload; // Assum head_size_qk == head_size_vo
+    cute::array<ElementK, get<1>(TileShapeQK{}) * HeadSizeVO> k_preload;              // Assum head_size_qk == head_size_vo
 
+    cute::array<ElementS, QGroupSize * product(take<0, 2>(TileShapeQK{}))> s_slm;
+    cute::array<ElementS, QGroupSize * get<0>(TileShapeQK{})> sum_slm;
+    cute::array<ElementS, QGroupSize * get<0>(TileShapeQK{})> max_slm;
+  };
+
+private:
+  SharedStorage &shared;
+
+public:
   Params params;
 
   //
   // Methods
   //
 
-  FMHAFwdMainloop(Params const& params_, SharedStorage&) : params(params_) {}
+  FMHAFwdMainloop(Params const &params_, SharedStorage &shared_) : params(params_), shared(shared_) {}
 
   static constexpr
   Params to_underlying_arguments(Arguments const &args, void * /* workspace */) {
@@ -341,6 +359,265 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
       barrier_wait(ScopeWorkgroup);
     }
+  }
+
+  template <typename FragASLM, typename FragARowSLM, typename QVCoord>
+  CUTLASS_DEVICE
+  void
+  operator()(TensorQ3D const& Q_3D,     // (q,d)
+             TensorK2D const& K_2D,     // (k,d)
+             TensorV2D const& V_2D,     // (d,k)
+            //  FragA          & tArA,     // Output accumulator (q,v)
+            //  FragARow       & tA_max,   // Softmax row-wise max accumulator
+            //  FragARow       & tA_sum,   // Softmax row-wise sum accumulator
+             FragASLM &tArA_slm,      // Output accumulator (q,v)
+             FragARowSLM &tA_max_slm, // Softmax row-wise max accumulator
+             FragARowSLM &tA_sum_slm, // Softmax row-wise sum accumulator
+             QVCoord          blk_qv,   // WG tile indices: (Q,V)
+             int              blk_k0,   // K block range: [K0,K1)
+             int              blk_k1,
+             int              total_blk, // Total # of K blocks
+             int              blk_head_kv,
+             int              thr_id,
+             int              seq_len,
+             int              full_tile_offset,
+             int              discard_seq_coord) {
+    using namespace sycl::ext::oneapi::this_work_item;
+
+    // Short dimension names:
+    //    q = sequence len dimension for Q
+    //    k = sequence len dimension for K
+    //    d = head size dimension for K/Q
+    //    v = head size dimension for V
+    //   VV = MMA tile indices for V
+    // Capital letters (Q, K, ...) refer to WG block indices.
+    // Primed letters (q', k', ...) refer to atom block indices.
+
+    auto tile_shape_v = make_shape(get<1>(TileShapePV{}) * C<VTiles>{}, get<2>(TileShapePV{}));
+    int blk_head_q_start = blk_head_kv * QGroupSize;
+    /* Create proxy coordinate tensors for Q/K/P/V */
+  
+    auto Q_2D = Q_3D(_,_,blk_head_q_start);
+    Tensor cQ = make_identity_tensor(Q_2D.shape());             // (q,d)
+    Tensor cK = make_identity_tensor(K_2D.shape());             // (k,d)
+    Tensor cV = make_identity_tensor(V_2D.shape());             // (v,k)
+    Tensor cP = make_identity_tensor(take<0,2>(TileShapeQK{})); // (q,k)
+
+    /* Partition global tensors into workgroup tiles */
+    Tensor gQ       = local_tile(cQ, TileShapeQK{}, append(blk_qv,_),             Step<_1,X,_1>{});   // (q,d,D)
+    Tensor gK       = local_tile(cK, TileShapeQK{}, make_coord(_,_,_),            Step<X,_1,_1>{});   // (k,d,K,D)
+    Tensor gV       = local_tile(cV, tile_shape_v,  make_coord(get<1>(blk_qv),_));                    // (v,k,K)
+    Tensor gV_split = local_tile(gV, TileShapePV{}, make_coord(_,_,0),            Step<X,_1,_1>{});   // (v,k,VV,K)
+
+    /* Create global -> register copies */
+    TiledCopyQ copy_q{Q_2D};
+    TiledCopyK copy_k{K_2D};
+    TiledCopyV copy_v{V_2D};
+
+    /* Create MMAs */
+    TiledMMAQK mma_qk{};
+    TiledMMAPV mma_pv{};
+
+    /* Slice TiledCopy/TiledMMA operations down to to work-item level */
+    auto thr_copy_q = copy_q.get_slice(thr_id);
+    auto thr_copy_k = copy_k.get_slice(thr_id);
+    auto thr_copy_v = copy_v.get_slice(thr_id);
+    auto thr_mma_qk = mma_qk.get_slice(thr_id);
+    auto thr_mma_pv = mma_pv.get_slice(thr_id);
+
+    /* Partition coordinate tensors for copy */
+    auto tQgQ = thr_copy_q.partition_S(gQ);                // (atom_val,q',d',D)
+    auto tKgK = thr_copy_k.partition_S(gK);                // (atom_val,k',d',K,D)
+    auto tVgV = thr_copy_v.partition_S(gV_split);          // (atom_val,v',k',VV,K)
+
+    /* Create register fragments for MMA and copies */
+    auto tQrQ = thr_copy_q.partition_sg_fragment_D(gQ(_,_,0));
+    auto tSrQ = thr_mma_qk.partition_sg_fragment_A(gQ(_,_,0));
+
+    auto tKrK = thr_copy_k.partition_sg_fragment_D(gK(_,_,0,0));
+    auto tSrK = thr_mma_qk.partition_sg_fragment_B(gK(_,_,0,0));
+
+    auto tSrS = thr_mma_qk.partition_sg_fragment_C(cP);
+    auto tArP = thr_mma_pv.partition_sg_fragment_A(cP);
+    auto tVrV = thr_copy_v.partition_sg_fragment_D(gV_split(_,_,0,0));
+    auto tArV = thr_mma_pv.partition_sg_fragment_B(gV_split(_,_,0,0));
+
+    /* Create TiledCopy objects for prefetches */
+    auto prefetch_q = make_block_2d_prefetch(copy_q);
+    auto prefetch_k = make_block_2d_prefetch(copy_k);
+    auto prefetch_v = make_block_2d_prefetch<SGPerWG::value>(tile_shape_v, V_2D);
+
+    /* Partition global tensors for prefetch */
+    auto pQgQ = prefetch_q.get_slice(thr_id).partition_S(gQ);
+    auto pKgK = prefetch_k.get_slice(thr_id).partition_S(gK);
+    auto pVgV = prefetch_v.get_slice(thr_id).partition_S(gV);
+
+    // ------
+    // Kernel
+    // ------
+
+    /* Initialization steps for first block: Q/K prefetch, O init */
+    /* TODO: limit D prefetch for large head size, and reorder K prefetches */
+    if (blk_k0 == 0) {
+      for (int D = 0; D < size<3>(pQgQ); D++) {
+        prefetch(prefetch_q, pQgQ(_,_,_,D));
+      }
+
+      for (int D = 0; D < size<4>(pKgK); D++) {
+        CUTLASS_PRAGMA_UNROLL
+        for (int K = 0; K < Stages; K++) {
+          prefetch(prefetch_k, pKgK(_,_,_,K,D));
+        }
+      }
+
+      // clear(tArA);
+      // fill(tA_max, cutlass::platform::numeric_limits<ElementA>::lowest());
+      // clear(tA_sum);
+      clear(tArA_slm);
+      fill(tA_max_slm, cutlass::platform::numeric_limits<ElementA>::lowest());
+      clear(tA_sum_slm);
+    }
+
+    
+    // auto tSrQPreLoad = make_tensor(make_smem_ptr<ElementQ>(&shared.q_preload), make_shape(size(tSrQ.layout()), size<4>(tKgK), 16 * SGPerWG{}, QGroupSize));
+    auto tSrKPreLoad = make_tensor(make_smem_ptr<ElementK>(&shared.k_preload), make_shape(size(tSrK.layout()), 16, size<4>(tKgK)));
+
+    // Preload All Q into SLM
+    // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+    // for (int Q = 0; Q < QGroupSize; Q++) {
+    //   Q_2D = Q_3D(_,_,blk_head_q_start+Q);
+    //   TiledCopyQ copy_q{Q_2D};
+    //   for (int D = 0; D < size<4>(tKgK); D++) {
+    //     copy(copy_q, tQgQ(_,_,_,D), tQrQ);
+    //     reorder(tQrQ, tSrQ);
+    //     for (int i = 0; i < tSrQ.size(); i++) {
+    //       tSrQPreLoad(i, D, thr_id, Q) = tSrQ(i);
+    //     }
+    //     // copy_block_r2s(tSrQ, tSrQPreLoad(_,D,thr_id,Q));
+    //   }
+    // }
+    // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+    auto sg = compat::get_nd_item<1>().get_sub_group();
+    /* Check if */
+    bool check_remainder_k = (seq_len % get<1>(TileShapeQK{}) != 0);
+    
+    /* Main loop, blocked in k. */
+    for (int K = blk_k0; K < blk_k1; K++) {
+      /* Split barrier to keep threads together */
+      // barrier_arrive(ScopeWorkgroup);
+      barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+      // Preload K into SLM
+      if (thr_id < 16) {
+        // if (sg.get_group_id()[0] == 0) {
+          for (int D = 0; D < size<4>(tKgK); D++) { // Head_size
+            copy(copy_k, tKgK(_,_,_,K,D), tKrK);
+            reorder(tKrK, tSrK);
+            // copy_block_r2s(tSrK, tSrKPreLoad(_,D,thr_id));
+            for (int i = 0; i < tSrK.size(); i++) {
+              tSrKPreLoad(i, thr_id, D) = tSrK(i);
+            }
+          }
+      }
+      barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+      /* GEMM 1: S = K * Q */
+      for (int Q = 0; Q < QGroupSize; Q++) {
+        FragA tArA;
+        FragARow tA_max;
+        FragARow tA_sum;
+        clear(tSrS);    /* TODO: fuse w/ initial gemm call */
+        // Load from SLM
+        for (int i = 0; i < tArA.size(); i++) {
+          tArA(i) = tArA_slm(i, thr_id, Q);
+        }
+        for (int i = 0; i < tA_max.size(); i++) {
+          tA_max(i) = tA_max_slm(i, thr_id, Q);
+        }
+        for (int i = 0; i < tA_sum.size(); i++) {
+          tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+        }
+        Q_2D = Q_3D(_,_,blk_head_q_start+Q);
+        TiledCopyQ copy_q{Q_2D};
+
+        for (int D = 0; D < size<4>(tKgK); D++) {
+          copy(copy_q, tQgQ(_,_,_,D), tQrQ);
+          reorder(tQrQ, tSrQ);
+          // Load from SLM
+          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+          
+          for (int i = 0; i < tSrK.size(); i++) {
+            tSrK(i) = tSrKPreLoad(i, thr_id % 16, D);
+          }
+          // for (int i = 0; i < tSrQ.size(); i++) {
+          //   tSrQ(i) = tSrQPreLoad(i, D, thr_id, Q);
+          // }
+          // copy_block_s2r(tSrKPreLoad(_,D,thr_id % 16), tSrK);// 0 QGroupSize index
+          // copy_block_s2r(tSrQPreLoad(_,D,thr_id,Q), tSrQ);// 0 QGroupSize index
+          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+          cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
+        } // D
+
+        /* V prefetch for GEMM 2 */
+        prefetch(prefetch_v, pVgV(_,_,_,K));
+  
+        /* Causal masking */
+        if constexpr (CausalMask) {
+        if (K == blk_k1 - 1) {
+          // Need to get global col and row indices to mask the elements
+          Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
+          Tensor gP = local_tile(cPgP, take<0,2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
+          auto cS_thread = thr_mma_qk.partition_C(gP);
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < tSrS.size(); ++i) {
+            int row_idx = get<0>(cS_thread(i));
+            int col_idx = get<1>(cS_thread(i));
+            if (col_idx - full_tile_offset > row_idx - discard_seq_coord) {
+              tSrS(i) = ElementS(-INFINITY);
+            }
+          }
+        }
+      }
+        /* k masking for remainder tiles */
+        if (check_remainder_k && K == total_blk - 1) {
+          FragSRow k_rem_mask;
+          int k = get<0>(tKgK(0,0,0,K,0)) + get_sub_group().get_local_id()[0];
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
+            k_rem_mask(i) = (k < seq_len) ? ElementS(sycl::nan(0u)) : ElementS(-INFINITY);
+          }
+        } // K remainder check
+  
+        /* Apply softmax and scaling */
+        softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
+        reorder(tSrS, tArP);
+  
+        /* GEMM 2: A += P * V, split in v dimension */
+        CUTLASS_PRAGMA_UNROLL
+        for (int VV = 0; VV < VTiles; VV++) {
+          copy(copy_v, tVgV(_,_,_,VV,K), tVrV);
+          reorder(tVrV, tArV);
+          cute::gemm(mma_pv, tArP, tArV, tArA(_,_,_,VV));
+        }
+
+        
+        // Store to SLM
+        for (int i = 0; i < tArA.size(); i++) {
+          tArA_slm(i,thr_id,Q) = tArA(i);
+        }
+        for (int i = 0; i < tA_max.size(); i++) {
+          tA_max_slm(i,thr_id,Q) = tA_max(i) ;
+        }
+        for (int i = 0; i < tA_sum.size(); i++) {
+          tA_sum_slm(i,thr_id,Q) = tA_sum(i);
+        }
+      } // QGroupSize
+      /* K prefetch */
+      for (int D = 0; D < size<4>(pKgK); D++) {
+        prefetch(prefetch_k, pKgK(_,_,_,K+Stages,D));
+      }
+
+      // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+      // barrier_wait(ScopeWorkgroup);
+    } // K blocks
   }
 
   // Single step of blocked softmax.
