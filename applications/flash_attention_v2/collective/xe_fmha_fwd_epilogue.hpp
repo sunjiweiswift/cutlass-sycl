@@ -70,7 +70,7 @@ public:
   using FragA = typename CollectiveMainloop::FragA;
   using FragARow = typename CollectiveMainloop::FragARow;
   using ElementA = typename FragA::value_type;
-  static constexpr int QGroupSize = 2;
+  static constexpr int QGroupSize = 1;
   // Split k-reduced tiles between participating subgroups.
   // Assumption: the A tile is contiguous.
   using ReduceK = decltype(size<3>(typename TiledMMAPV::ThrLayoutVMNK{}));
