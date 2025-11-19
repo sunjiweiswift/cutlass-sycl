@@ -88,7 +88,7 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   static constexpr int VTiles = VTiles_; //constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
   using TileShapeOutput = decltype(make_shape(get<0>(TileShapePV{}), get<1>(TileShapePV{}) * VTiles_));
   static constexpr int HeadSizeVO = VTiles * get<1>(TileShapePV{});
-  static constexpr int QGroupSize = 2;
+  static constexpr int QGroupSize = 1;
 
   using SGPerWG = decltype(product(take<1,4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
 
@@ -312,48 +312,39 @@ public:
     // }
     // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
     auto sg = compat::get_nd_item<1>().get_sub_group();
+    int sg_id = sg.get_group_id()[0] == 0;
     /* Main loop, blocked in k. */
     for (int K = blk_k0; K < blk_k1; K++) {
       /* Split barrier to keep threads together */
       // barrier_arrive(ScopeWorkgroup);
+      // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
       // Preload K into SLM
-      if (thr_id < intel::sg_size) {
-        // if (sg.get_group_id()[0] == 0) {
+      // if (thr_id < intel::sg_size) {
+        if (sg_id == 0) {
           for (int D = 0; D < size<4>(tKgK); D++) { // Head_size
-          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
           copy(copy_k, tKgK(_,_,_,K,D), tKrK);
           reorder(tKrK, tSrK);
-          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
-          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
-          // for (int i = 0; i < tSrK.size(); i++) {
-          //   tSrKPreLoad(i, thr_id, D) = tSrK(i);
-          // }
           copy_block_r2s(tSrK, tSrKPreLoad(_,D));
-          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
         }
       }
-      if (thread(0,0)) {
-        print("\ntSrKPreLoad\n");
-        print_tensor(tSrKPreLoad);
-        // print("\ntSrKPreLoad1\n");
-        // print_tensor(tSrKPreLoad1);
-      }
+      // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
       /* GEMM 1: S = K * Q */
+      CUTLASS_PRAGMA_UNROLL
       for (int Q = 0; Q < QGroupSize; Q++) {  // QGroupSize
         FragA tArA;
         FragARow tA_max;
         FragARow tA_sum;
         clear(tSrS);    /* TODO: fuse w/ initial gemm call */
-        // Load from SLM
-        for (int i = 0; i < tArA.size(); i++) {
-          tArA(i) = tArA_slm(i, thr_id, Q);
-        }
-        for (int i = 0; i < tA_max.size(); i++) {
-          tA_max(i) = tA_max_slm(i, thr_id, Q);
-        }
-        for (int i = 0; i < tA_sum.size(); i++) {
-          tA_sum(i) = tA_sum_slm(i, thr_id, Q);
-        }
+
+        // for (int i = 0; i < tArA.size(); i++) {
+        //   tArA(i) = tArA_slm(i, thr_id, Q);
+        // }
+        // for (int i = 0; i < tA_max.size(); i++) {
+        //   tA_max(i) = tA_max_slm(i, thr_id, Q);
+        // }
+        // for (int i = 0; i < tA_sum.size(); i++) {
+        //   tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+        // }
 
         Q_2D = Q_3D(_,_,blk_head_q_start+Q);
         TiledCopyQ copy_q{Q_2D};
@@ -363,7 +354,7 @@ public:
           // copy(copy_k, tKgK(_,_,_,K,D), tKrK);
           // reorder(tKrK, tSrK);
           // Load from SLM
-          barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+          // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
           
           // for (int i = 0; i < tSrK.size(); i++) {
           //   tSrK(i) = tSrKPreLoad(i, thr_id % intel::sg_size, D);
@@ -373,7 +364,7 @@ public:
           //   tSrQ(i) = tSrQPreLoad(i, D, thr_id, Q);
           // }
           // copy_block_s2r(tSrQPreLoad(_,D,thr_id,Q), tSrQ);// 0 QGroupSize index
-          barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+          // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
           cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
         } // D
   
@@ -395,7 +386,10 @@ public:
         
         /* TODO: causal masking */
         static_assert(!CausalMask, "Causal mask unimplemented");
-     
+        // Load from SLM
+        copy_block_s2r(tArA_slm(_,sg_id,Q), tArA);// all sg index
+        copy_block_s2r(tA_max_slm(_,sg_id,Q), tA_max);// all sg index
+        copy_block_s2r(tA_sum_slm(_,sg_id,Q), tA_sum);// all sg index
         /* Apply softmax and scaling */
         softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
         reorder(tSrS, tArP);
@@ -408,15 +402,9 @@ public:
           cute::gemm(mma_pv, tArP, tArV, tArA(_,_,_,VV));
         }
         // Store to SLM
-        for (int i = 0; i < tArA.size(); i++) {
-          tArA_slm(i,thr_id,Q) = tArA(i);
-        }
-        for (int i = 0; i < tA_max.size(); i++) {
-          tA_max_slm(i,thr_id,Q) = tA_max(i) ;
-        }
-        for (int i = 0; i < tA_sum.size(); i++) {
-          tA_sum_slm(i,thr_id,Q) = tA_sum(i);
-        }
+        copy_block_r2s(tArA, tArA_slm(_, sg_id, Q));     // all sg index
+        copy_block_r2s(tA_max, tA_max_slm(_, sg_id, Q)); // all sg index
+        copy_block_r2s(tA_sum, tA_sum_slm(_, sg_id, Q)); // all sg index
       } // QGroupSize
       /* K prefetch */
       for (int D = 0; D < size<4>(pKgK); D++) {

@@ -153,21 +153,27 @@ public:
     using namespace cute;
     using ElementA = typename FragA::element_type;
     int blk_head_q_start = blk_head_kv * QGroupSize;
+    auto sg = compat::get_nd_item<1>().get_sub_group();
+    int sg_id = sg.get_group_id()[0] == 0;
+    CUTLASS_PRAGMA_UNROLL
     for (int Q = 0; Q < QGroupSize; Q++) {
       TensorO2D O_2D = O_3D(_,_,blk_head_q_start + Q);
       FragA tArA;
       FragARow tA_max;
       FragARow tA_sum;
       // Load from SLM
-      for (int i = 0; i < tArA.size(); i++) {
-        tArA(i) = tArA_slm(i, thr_id, Q);
-      }
-      for (int i = 0; i < tA_max.size(); i++) {
-        tA_max(i) = tA_max_slm(i, thr_id, Q);
-      }
-      for (int i = 0; i < tA_sum.size(); i++) {
-        tA_sum(i) = tA_sum_slm(i, thr_id, Q);
-      }
+      copy_block_s2r(tArA_slm(_,sg_id,Q), tArA);// all sg index
+      copy_block_s2r(tA_max_slm(_,sg_id,Q), tA_max);// all sg index
+      copy_block_s2r(tA_sum_slm(_,sg_id,Q), tA_sum);// all sg index
+      // for (int i = 0; i < tArA.size(); i++) {
+      //   tArA(i) = tArA_slm(i, thr_id, Q);
+      // }
+      // for (int i = 0; i < tA_max.size(); i++) {
+      //   tA_max(i) = tA_max_slm(i, thr_id, Q);
+      // }
+      // for (int i = 0; i < tA_sum.size(); i++) {
+      //   tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+      // }
       // Reduce k-blocks of A and A_sum across WG, if needed.
       auto [rA, rA_sum, active] = reduce_A(tArA, tA_max, tA_sum, thr_id);
       

@@ -205,9 +205,9 @@ public:
       Tensor O = make_tensor(make_gmem_ptr(p.O), make_layout(shape_O, p.dO));    // (q,v,h,b)
 
       // O accumulator types
-      auto tArA_slm = make_tensor(make_smem_ptr<typename FragA::element_type>(&shared_storage.mainloop.s_slm), make_shape(size(FragA{}.shape()), intel::sg_size * SGPerWG{}, QGroupSize));
-      auto tA_max_slm = make_tensor(make_smem_ptr<typename FragARow::element_type>(&shared_storage.mainloop.max_slm), make_shape(size(FragARow{}.shape()), intel::sg_size * SGPerWG{}, QGroupSize));
-      auto tA_sum_slm = make_tensor(make_smem_ptr<typename FragARow::element_type>(&shared_storage.mainloop.sum_slm), make_shape(size(FragARow{}.shape()), intel::sg_size * SGPerWG{}, QGroupSize));
+      auto tArA_slm = make_tensor(make_smem_ptr<typename FragA::element_type>(&shared_storage.mainloop.s_slm), make_shape(size(FragA{}.shape()) * intel::sg_size, SGPerWG{}, QGroupSize));
+      auto tA_max_slm = make_tensor(make_smem_ptr<typename FragARow::element_type>(&shared_storage.mainloop.max_slm), make_shape(size(FragARow{}.shape()) * intel::sg_size, SGPerWG{}, QGroupSize));
+      auto tA_sum_slm = make_tensor(make_smem_ptr<typename FragARow::element_type>(&shared_storage.mainloop.sum_slm), make_shape(size(FragARow{}.shape()) * intel::sg_size, SGPerWG{}, QGroupSize));
       clear(tArA_slm);
       fill(tA_max_slm, cutlass::platform::numeric_limits<typename FragARow::element_type>::lowest());
       clear(tA_sum_slm);
