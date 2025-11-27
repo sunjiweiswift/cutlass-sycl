@@ -88,7 +88,7 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   static constexpr int VTiles = VTiles_; //constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
   using TileShapeOutput = decltype(make_shape(get<0>(TileShapePV{}), get<1>(TileShapePV{}) * VTiles_));
   static constexpr int HeadSizeVO = VTiles * get<1>(TileShapePV{});
-  static constexpr int QGroupSize = 1;
+  static constexpr int QGroupSize = 2;
 
   using SGPerWG = decltype(product(take<1,4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
 
@@ -178,7 +178,7 @@ public:
     return true;
   }
 
-  template <typename FragASLM, typename FragARowSLM, typename QVCoord>
+  template <typename FragASLM, typename FragAMaxSLM,typename FragARowSLM, typename QVCoord>
   CUTLASS_DEVICE void
   operator()(TensorQ3D const &Q_3D,   // (q,d)
              TensorK2D const &K_2D,   // (k,d)
@@ -187,7 +187,7 @@ public:
          //  FragARow      & tA_max,   // Softmax row-wise max accumulator
          //  FragARow      & tA_sum,   // Softmax row-wise sum accumulator
              FragASLM &tArA_slm,      // Output accumulator (q,v)
-             FragARowSLM &tA_max_slm, // Softmax row-wise max accumulator
+             FragAMaxSLM &tA_max_slm, // Softmax row-wise max accumulator
              FragARowSLM &tA_sum_slm, // Softmax row-wise sum accumulator
              QVCoord blk_qv,          // WG tile indices: (Q,V)
              int blk_k0,              // K block range: [K0,K1)
@@ -277,12 +277,12 @@ public:
         prefetch(prefetch_q, pQgQ(_,_,_,D));
       }
 
-      for (int D = 0; D < size<4>(pKgK); D++) {
-        CUTLASS_PRAGMA_UNROLL
-        for (int K = 0; K < Stages; K++) {
-          prefetch(prefetch_k, pKgK(_,_,_,K,D));
-        }
-      }
+      // for (int D = 0; D < size<4>(pKgK); D++) {
+      //   CUTLASS_PRAGMA_UNROLL
+      //   for (int K = 0; K < Stages; K++) {
+      //     prefetch(prefetch_k, pKgK(_,_,_,K,D));
+      //   }
+      // }
 
       // clear(tArA);
       // fill(tA_max, cutlass::platform::numeric_limits<ElementA>::lowest());
@@ -317,7 +317,7 @@ public:
     for (int K = blk_k0; K < blk_k1; K++) {
       /* Split barrier to keep threads together */
       // barrier_arrive(ScopeWorkgroup);
-      // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+      barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
       // Preload K into SLM
       // if (thr_id < intel::sg_size) {
         if (sg_id == 0) {
@@ -327,7 +327,7 @@ public:
           copy_block_r2s(tSrK, tSrKPreLoad(_,D));
         }
       }
-      // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
+      barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
       /* GEMM 1: S = K * Q */
       CUTLASS_PRAGMA_UNROLL
       for (int Q = 0; Q < QGroupSize; Q++) {  // QGroupSize
@@ -335,17 +335,23 @@ public:
         FragARow tA_max;
         FragARow tA_sum;
         clear(tSrS);    /* TODO: fuse w/ initial gemm call */
-
-        // for (int i = 0; i < tArA.size(); i++) {
-        //   tArA(i) = tArA_slm(i, thr_id, Q);
-        // }
-        // for (int i = 0; i < tA_max.size(); i++) {
-        //   tA_max(i) = tA_max_slm(i, thr_id, Q);
-        // }
-        // for (int i = 0; i < tA_sum.size(); i++) {
-        //   tA_sum(i) = tA_sum_slm(i, thr_id, Q);
-        // }
-
+barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+if (thread(0,0)) {
+  print("\n tA_max \n");
+  print(tA_max);
+  print("\n tA_max_slm \n");
+  print(tA_max_slm);
+}
+for (int i = 0; i < tA_max.size(); i++) {
+  tA_max(i) = tA_max_slm(i, thr_id % 16, sg_id, Q);
+}
+        for (int i = 0; i < tArA.size(); i++) {
+          tArA(i) = tArA_slm(i, thr_id, Q);
+        }
+        for (int i = 0; i < tA_sum.size(); i++) {
+          tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+        }
+barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
         Q_2D = Q_3D(_,_,blk_head_q_start+Q);
         TiledCopyQ copy_q{Q_2D};
         for (int D = 0; D < size<4>(tKgK); D++) { // head_size/dim 64 / 32
@@ -355,10 +361,6 @@ public:
           // reorder(tKrK, tSrK);
           // Load from SLM
           // barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
-          
-          // for (int i = 0; i < tSrK.size(); i++) {
-          //   tSrK(i) = tSrKPreLoad(i, thr_id % intel::sg_size, D);
-          // }
           copy_block_s2r(tSrKPreLoad(_,D), tSrK);// 0 QGroupSize index
           // for (int i = 0; i < tSrQ.size(); i++) {
           //   tSrQ(i) = tSrQPreLoad(i, D, thr_id, Q);
@@ -387,9 +389,9 @@ public:
         /* TODO: causal masking */
         static_assert(!CausalMask, "Causal mask unimplemented");
         // Load from SLM
-        copy_block_s2r(tArA_slm(_,sg_id,Q), tArA);// all sg index
-        copy_block_s2r(tA_max_slm(_,sg_id,Q), tA_max);// all sg index
-        copy_block_s2r(tA_sum_slm(_,sg_id,Q), tA_sum);// all sg index
+        // copy_block_s2r(tArA_slm(_,sg_id,Q), tArA);// all sg index
+        // copy_block_s2r(tA_max_slm(_,sg_id,Q), tA_max);// all sg index
+        // copy_block_s2r(tA_sum_slm(_,sg_id,Q), tA_sum);// all sg index
         /* Apply softmax and scaling */
         softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
         reorder(tSrS, tArP);
@@ -402,14 +404,26 @@ public:
           cute::gemm(mma_pv, tArP, tArV, tArA(_,_,_,VV));
         }
         // Store to SLM
-        copy_block_r2s(tArA, tArA_slm(_, sg_id, Q));     // all sg index
-        copy_block_r2s(tA_max, tA_max_slm(_, sg_id, Q)); // all sg index
-        copy_block_r2s(tA_sum, tA_sum_slm(_, sg_id, Q)); // all sg index
+        // copy_block_r2s(tArA, tArA_slm(_, sg_id, Q));     // all sg index
+        // copy_block_r2s(tA_max, tA_max_slm(_, sg_id, Q)); // all sg index
+        // copy_block_r2s(tA_sum, tA_sum_slm(_, sg_id, Q)); // all sg index
+        barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+        for (int i = 0; i < tA_max.size(); i++) {
+          tA_max_slm(i, thr_id % 16, sg_id,Q) = tA_max(i);
+        }
+
+        for (int i = 0; i < tArA.size(); i++) {
+          tArA_slm(i, thr_id, Q) = tArA(i);
+        }
+        for (int i = 0; i < tA_sum.size(); i++) {
+          tA_sum_slm(i, thr_id, Q) = tA_sum(i);
+        }
+        barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
       } // QGroupSize
       /* K prefetch */
-      for (int D = 0; D < size<4>(pKgK); D++) {
-        prefetch(prefetch_k, pKgK(_,_,_,K+Stages,D));
-      }
+      // for (int D = 0; D < size<4>(pKgK); D++) {
+      //   prefetch(prefetch_k, pKgK(_,_,_,K+Stages,D));
+      // }
 
       // barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
       // barrier_wait(ScopeWorkgroup);

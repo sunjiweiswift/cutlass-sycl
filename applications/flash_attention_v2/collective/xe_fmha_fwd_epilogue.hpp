@@ -70,7 +70,7 @@ public:
   using FragA = typename CollectiveMainloop::FragA;
   using FragARow = typename CollectiveMainloop::FragARow;
   using ElementA = typename FragA::value_type;
-  static constexpr int QGroupSize = 1;
+  static constexpr int QGroupSize = 2;
   // Split k-reduced tiles between participating subgroups.
   // Assumption: the A tile is contiguous.
   using ReduceK = decltype(size<3>(typename TiledMMAPV::ThrLayoutVMNK{}));
@@ -136,7 +136,7 @@ public:
   CUTLASS_HOST_DEVICE
   FMHAFwdEpilogue(Params const&, SharedStorage& shared_) : shared(shared_) {}
 
-  template <typename FragASLM, typename FragARowSLM, typename QVCoord>
+  template <typename FragASLM, typename FragAMaxSLM, typename FragARowSLM, typename QVCoord>
   CUTLASS_DEVICE
   void
   operator()(TensorO3D const& O_3D,        // Global O tensor: (q,v,h)
@@ -144,7 +144,7 @@ public:
             //  FragARow       & tA_max,   // Softmax row-wise max accumulator
             //  FragARow       & tA_sum,   // Softmax row-wise sum accumulator
              FragASLM         &tArA_slm,   // Output accumulator (q,v)
-             FragARowSLM      &tA_max_slm, // Softmax row-wise max accumulator
+             FragAMaxSLM      &tA_max_slm, // Softmax row-wise max accumulator
              FragARowSLM      &tA_sum_slm, // Softmax row-wise sum accumulator
              QVCoord          blk_qv,      // WG tile indices: (q,v)
              int              blk_head_kv, // kv head index
@@ -162,18 +162,20 @@ public:
       FragARow tA_max;
       FragARow tA_sum;
       // Load from SLM
-      copy_block_s2r(tArA_slm(_,sg_id,Q), tArA);// all sg index
-      copy_block_s2r(tA_max_slm(_,sg_id,Q), tA_max);// all sg index
-      copy_block_s2r(tA_sum_slm(_,sg_id,Q), tA_sum);// all sg index
-      // for (int i = 0; i < tArA.size(); i++) {
-      //   tArA(i) = tArA_slm(i, thr_id, Q);
-      // }
-      // for (int i = 0; i < tA_max.size(); i++) {
-      //   tA_max(i) = tA_max_slm(i, thr_id, Q);
-      // }
-      // for (int i = 0; i < tA_sum.size(); i++) {
-      //   tA_sum(i) = tA_sum_slm(i, thr_id, Q);
-      // }
+      // copy_block_s2r(tArA_slm(_,sg_id,Q), tArA);// all sg index
+      // copy_block_s2r(tA_max_slm(_,sg_id,Q), tA_max);// all sg index
+      // copy_block_s2r(tA_sum_slm(_,sg_id,Q), tA_sum);// all sg index
+      barrier_arrive(ScopeWorkgroup, SemanticsRelease | SemanticsWGMemory);
+      for (int i = 0; i < tA_max.size(); i++) {
+        tA_max(i) = tA_max_slm(i, thr_id % 16, sg_id,Q);
+      }
+      for (int i = 0; i < tArA.size(); i++) {
+        tArA(i) = tArA_slm(i, thr_id, Q);
+      }
+      for (int i = 0; i < tA_sum.size(); i++) {
+        tA_sum(i) = tA_sum_slm(i, thr_id, Q);
+      }
+       barrier_wait(ScopeWorkgroup, SemanticsAcquire | SemanticsWGMemory);
       // Reduce k-blocks of A and A_sum across WG, if needed.
       auto [rA, rA_sum, active] = reduce_A(tArA, tA_max, tA_sum, thr_id);
       
