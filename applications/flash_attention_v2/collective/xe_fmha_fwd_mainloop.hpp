@@ -86,6 +86,7 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using TileShapeQK = decltype(TiledMMAQK{}.tile_mnk());
   using TileShapePV = decltype(TiledMMAPV{}.tile_mnk());
   static constexpr int VTiles = VTiles_;
+  static constexpr int HeadSizeVO = VTiles * get<1>(TileShapePV{});
   using SubgroupLayoutQK = decltype(TiledMMAQK{}.get_atom_layout_mnk());
   using SGPerWG = decltype(product(take<1,4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
 
@@ -125,6 +126,7 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using FragA = expand_sg_fragment_t<SingleFragA, 1, VTiles>;     // (atom val,q',v',VV)
   using FragARow = decltype(reduce<1>(FragA{}, sycl::plus<void>{}));
   using ElementA = typename TiledMMAPV::ValTypeD;
+  using ElementK = typename TiledMMAQK::ValTypeB;
 
   static constexpr bool CausalMask = CausalMask_;
 
@@ -137,15 +139,21 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
   using Params = Arguments;
 
   // SLM data
-  struct SharedStorage {};
+  struct SharedStorage {
+    cute::array<ElementK, get<1>(TileShapeQK{}) * HeadSizeVO> k_preload;  // SLM for K preload
+  };
 
+private:
+  SharedStorage &shared;
+
+public:
   Params params;
 
   //
   // Methods
   //
 
-  FMHAFwdMainloop(Params const& params_, SharedStorage&) : params(params_) {}
+  FMHAFwdMainloop(Params const &params_, SharedStorage &shared_) : params(params_), shared(shared_) {}
 
   static constexpr
   Params to_underlying_arguments(Arguments const &args, void * /* workspace */) {
@@ -237,12 +245,12 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
     /* Create TiledCopy objects for prefetches */
     auto prefetch_q = make_block_2d_prefetch(copy_q);
-    auto prefetch_k = make_block_2d_prefetch(copy_k);
+    // auto prefetch_k = make_block_2d_prefetch(copy_k);
     auto prefetch_v = make_block_2d_prefetch<SGPerWG::value>(tile_shape_v, V_2D);
 
     /* Partition global tensors for prefetch */
     auto pQgQ = prefetch_q.get_slice(thr_id).partition_S(gQ);
-    auto pKgK = prefetch_k.get_slice(thr_id).partition_S(gK);
+    // auto pKgK = prefetch_k.get_slice(thr_id).partition_S(gK);
     auto pVgV = prefetch_v.get_slice(thr_id).partition_S(gV);
 
     // ------
@@ -256,12 +264,12 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
         prefetch(prefetch_q, pQgQ(_,_,_,D));
       }
 
-      for (int D = 0; D < size<4>(pKgK); D++) {
-        CUTLASS_PRAGMA_UNROLL
-        for (int K = 0; K < Stages; K++) {
-          prefetch(prefetch_k, pKgK(_,_,_,K,D));
-        }
-      }
+      // for (int D = 0; D < size<4>(pKgK); D++) {
+      //   CUTLASS_PRAGMA_UNROLL
+      //   for (int K = 0; K < Stages; K++) {
+      //     prefetch(prefetch_k, pKgK(_,_,_,K,D));
+      //   }
+      // }
 
       clear(tArA);
       fill(tA_max, cutlass::platform::numeric_limits<ElementA>::lowest());
@@ -270,7 +278,8 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
     /* Check if */
     bool check_remainder_k = (seq_len % get<1>(TileShapeQK{}) != 0);
-
+    auto tSrKPreLoad = make_tensor(make_smem_ptr<ElementK>(&shared.k_preload), make_shape(size(tSrK.tv_layout()), size<4>(tKgK)));
+    // clear(tSrKPreLoad);
     /* Main loop, blocked in k. */
     for (int K = blk_k0; K < blk_k1; K++) {
       /* Split barrier to keep threads together */
@@ -278,12 +287,15 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
 
       /* GEMM 1: S = K * Q */
       clear(tSrS);    /* TODO: fuse w/ initial gemm call */
+      // CUTLASS_PRAGMA_UNROLL
       for (int D = 0; D < size<4>(tKgK); D++) {
+      // for (int D = 0; D < size<4>(tKgK); D++) {
+        copy_block_s2r(tSrKPreLoad(_,D), tSrK);
         copy(copy_q, tQgQ(_,_,_,D),   tQrQ);
-        copy(copy_k, tKgK(_,_,_,K,D), tKrK);
-
+        // copy(copy_k, tKgK(_,_,_,K,D), tKrK);
+        
         reorder(tQrQ, tSrQ);
-        reorder(tKrK, tSrK);
+        // reorder(tKrK, tSrK);
 
         cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
       }
@@ -335,9 +347,9 @@ struct FMHAFwdMainloop<XeDefault<Stages>, CausalMask_,
       }
 
       /* K prefetch */
-      for (int D = 0; D < size<4>(pKgK); D++) {
-        prefetch(prefetch_k, pKgK(_,_,_,K+Stages,D));
-      }
+      // for (int D = 0; D < size<4>(pKgK); D++) {
+      //   prefetch(prefetch_k, pKgK(_,_,_,K+Stages,D));
+      // }
 
       barrier_wait(ScopeWorkgroup);
     }
